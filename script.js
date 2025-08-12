@@ -336,12 +336,21 @@ class Speaky {
     }
     
     async startRecording() {
+        // Prevent multiple starts
+        if (this.isRecording) {
+            console.log('Recording already in progress');
+            return;
+        }
+        
         // Show recording state immediately
         this.isRecording = true;
         this.micButton.classList.add('recording');
         this.micIcon.className = 'fas fa-stop';
         this.status.textContent = 'Initializing...';
         this.status.classList.add('recording');
+        
+        // Add a small delay to ensure UI updates
+        await new Promise(resolve => setTimeout(resolve, 50));
         
         // On mobile, we need to initialize recognition when the user taps the button
         if (this.isMobile) {
@@ -406,12 +415,20 @@ class Speaky {
                     
                     this.recognition.onend = () => {
                         if (this.isRecording) {
-                            try {
-                                this.recognition.start();
-                            } catch (e) {
-                                console.error('Failed to restart recognition:', e);
-                                this.stopRecording();
-                            }
+                            // Add a small delay before restarting
+                            setTimeout(() => {
+                                if (this.isRecording) {
+                                    try {
+                                        // Check if recognition is not already running
+                                        if (this.recognition && !this.recognition.running) {
+                                            this.recognition.start();
+                                        }
+                                    } catch (e) {
+                                        console.error('Failed to restart recognition:', e);
+                                        this.stopRecording();
+                                    }
+                                }
+                            }, 100);
                         }
                     };
                 }
