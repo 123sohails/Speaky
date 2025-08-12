@@ -372,6 +372,9 @@ class Speaky {
                     this.recognition.interimResults = true;
                     this.recognition.lang = this.language.value;
                     
+                    // Track if recognition is running
+                    this.recognition.isRunning = false;
+                    
                     // Set up event handlers
                     this.recognition.onresult = (event) => {
                         let interimTranscript = '';
@@ -404,24 +407,26 @@ class Speaky {
                             case 'audio-capture':
                                 errorMessage = 'No microphone found. Please check your device settings.';
                                 break;
-                            case 'not-allowed':
-                                errorMessage = 'Microphone access is blocked. Please allow access in your browser settings.';
-                                break;
                         }
                         
                         this.showNotification(errorMessage, 'error');
                         this.stopRecording();
                     };
                     
+                    this.recognition.onstart = () => {
+                        this.recognition.isRunning = true;
+                        console.log('Speech recognition started');
+                    };
+                    
                     this.recognition.onend = () => {
+                        this.recognition.isRunning = false;
                         if (this.isRecording) {
-                            // Add a small delay before restarting
                             setTimeout(() => {
-                                if (this.isRecording) {
+                                if (this.isRecording && this.recognition) {
                                     try {
-                                        // Check if recognition is not already running
-                                        if (this.recognition && !this.recognition.running) {
+                                        if (!this.recognition.isRunning) {
                                             this.recognition.start();
+                                            this.recognition.isRunning = true;
                                         }
                                     } catch (e) {
                                         console.error('Failed to restart recognition:', e);
@@ -438,16 +443,9 @@ class Speaky {
                 this.status.textContent = 'Listening...';
                 
                 // Check if recognition is not already running
-                if (this.recognition && !this.recognition.running) {
-                    try {
-                        this.recognition.start();
-                    } catch (error) {
-                        console.error('Error starting recognition:', error);
-                        this.showNotification('Failed to start recording', 'error');
-                        this.stopRecording();
-                    }
-                } else {
-                    console.log('Recognition already running');
+                if (this.recognition && !this.recognition.isRunning) {
+                    this.recognition.start();
+                    this.recognition.isRunning = true;
                 }
                 return; // Exit early for mobile
                 
@@ -459,7 +457,6 @@ class Speaky {
             }
         }
         
-        // Desktop recording flow
         try {
             const stream = await navigator.mediaDevices.getUserMedia({ 
                 audio: {
@@ -477,43 +474,13 @@ class Speaky {
             this.status.textContent = 'Listening...';
             
             // Check if recognition is not already running
-            if (this.recognition && !this.recognition.running) {
-                try {
-                    this.recognition.start();
-                } catch (error) {
-                    console.error('Error starting recognition:', error);
-                    this.showNotification('Failed to start recording', 'error');
-                    this.stopRecording();
-                }
-            } else {
-                console.log('Recognition already running');
+            if (this.recognition && !this.recognition.isRunning) {
+                this.recognition.start();
+                this.recognition.isRunning = true;
             }
         } catch (error) {
             console.error('Microphone access error:', error);
             this.showNotification('Microphone access denied. Please allow access to use speech recognition.', 'error');
-            this.stopRecording();
-        }
-        
-        try {
-            // Mobile-specific: Set language again before starting (some mobile browsers reset it)
-            if (this.isMobile) {
-                this.recognition.lang = this.language.value;
-            }
-            
-            this.recognition.start();
-        } catch (error) {
-            console.error('Failed to start recording:', error);
-            let errorMessage = 'Failed to start recording';
-            
-            if (this.isMobile) {
-                if (error.name === 'InvalidStateError') {
-                    errorMessage = 'Please wait a moment and try again';
-                } else if (error.name === 'NotAllowedError') {
-                    errorMessage = 'Microphone access denied. Please check browser settings.';
-                }
-            }
-            
-            this.showNotification(errorMessage, 'error');
             this.stopRecording();
         }
     }
