@@ -311,11 +311,7 @@ class Speaky {
             return;
         }
         
-        // Mobile-specific: Ensure we have user interaction
-        if (this.isMobile && !document.hasStoredUserActivation) {
-            this.showNotification('Please tap the microphone button to start recording', 'warning');
-            return;
-        }
+
         
         this.isRecording = true;
         this.micButton.classList.add('recording');
@@ -729,3 +725,4 @@ class Speaky {
 document.addEventListener('DOMContentLoaded', () => {
     new Speaky();
 });
+
