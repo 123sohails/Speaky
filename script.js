@@ -7,12 +7,18 @@ class Speaky {
         this.timer = null;
         this.autoPunctuation = false;
         this.voiceCommands = false;
+        this.isMobile = this.detectMobile();
         
         this.initElements();
         this.initSpeechRecognition();
         this.initEvents();
     }
     
+    detectMobile() {
+        return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) ||
+               (navigator.maxTouchPoints && navigator.maxTouchPoints > 2 && /MacIntel/.test(navigator.platform));
+    }
+
     initElements() {
         this.micButton = document.getElementById('micBtn');
         this.micIcon = document.getElementById('micIcon');
@@ -71,26 +77,47 @@ class Speaky {
     }
     
     async initSpeechRecognition() {
+        // Check for speech recognition support with mobile-specific handling
         if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
-            this.showNotification('Speech recognition not supported in this browser. Use Chrome, Edge, or Safari.', 'error');
+            const message = this.isMobile ? 
+                'Speech recognition not supported on this mobile browser. Try Chrome or Safari.' : 
+                'Speech recognition not supported in this browser. Use Chrome, Edge, or Safari.';
+            this.showNotification(message, 'error');
             return;
         }
 
+        // Request microphone permission with mobile-specific handling
         try {
-            await navigator.mediaDevices.getUserMedia({ audio: true });
+            await navigator.mediaDevices.getUserMedia({ 
+                audio: {
+                    echoCancellation: true,
+                    noiseSuppression: true,
+                    autoGainControl: true
+                }
+            });
             this.showNotification('Microphone access granted!', 'success');
         } catch (error) {
-            this.showNotification('Please allow microphone access to use speech recognition', 'error');
+            console.error('Microphone access error:', error);
+            const message = this.isMobile ? 
+                'Please allow microphone access in your browser settings and refresh the page' : 
+                'Please allow microphone access to use speech recognition';
+            this.showNotification(message, 'error');
             return;
         }
 
         const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
         this.recognition = new SpeechRecognition();
         
-        this.recognition.continuous = true;
+        // Mobile-optimized settings
+        this.recognition.continuous = !this.isMobile; // Disable continuous on mobile for better stability
         this.recognition.interimResults = true;
         this.recognition.lang = this.language.value;
         this.recognition.maxAlternatives = 1;
+        
+        // Mobile-specific settings
+        if (this.isMobile) {
+            this.recognition.grammars = null; // Disable grammars on mobile
+        }
             
         this.recognition.onstart = () => {
             console.log('Speech recognition started');
@@ -115,12 +142,34 @@ class Speaky {
         
         this.recognition.onerror = (event) => {
             console.error('Speech recognition error:', event.error);
-            this.showNotification(`Error: ${event.error}`, 'error');
+            let errorMessage = `Error: ${event.error}`;
+            
+            // Mobile-specific error handling
+            if (this.isMobile) {
+                switch (event.error) {
+                    case 'not-allowed':
+                        errorMessage = 'Microphone access denied. Please enable in browser settings.';
+                        break;
+                    case 'no-speech':
+                        errorMessage = 'No speech detected. Try speaking closer to the microphone.';
+                        break;
+                    case 'network':
+                        errorMessage = 'Network error. Check your internet connection.';
+                        break;
+                    case 'audio-capture':
+                        errorMessage = 'Microphone not available. Check if another app is using it.';
+                        break;
+                }
+            }
+            
+            this.showNotification(errorMessage, 'error');
             this.stopRecording();
         };
         
         this.recognition.onend = () => {
             if (this.isRecording) {
+                // Mobile-specific restart logic with delay
+                const restartDelay = this.isMobile ? 500 : 100;
                 setTimeout(() => {
                     if (this.isRecording) {
                         try {
@@ -130,7 +179,7 @@ class Speaky {
                             this.stopRecording();
                         }
                     }
-                }, 100);
+                }, restartDelay);
             }
         };
     }
@@ -231,7 +280,20 @@ class Speaky {
             }
             
             displayText = displayText.replace(/\n/g, '<br>');
-            this.transcription.innerHTML = displayText;
+            
+            // Mobile-specific DOM update with forced reflow
+            if (this.isMobile) {
+                // Force DOM update on mobile
+                this.transcription.style.display = 'none';
+                this.transcription.innerHTML = displayText;
+                this.transcription.offsetHeight; // Force reflow
+                this.transcription.style.display = 'block';
+                
+                // Ensure contenteditable is properly set
+                this.transcription.setAttribute('contenteditable', 'true');
+            } else {
+                this.transcription.innerHTML = displayText;
+            }
         } else if (document.activeElement !== this.transcription) {
             this.transcription.innerHTML = `
                 <div class="placeholder">
@@ -243,7 +305,16 @@ class Speaky {
         }
         
         this.updateStats();
-        this.transcription.scrollTop = this.transcription.scrollHeight;
+        
+        // Mobile-specific scrolling
+        if (this.isMobile) {
+            // Use requestAnimationFrame for smoother scrolling on mobile
+            requestAnimationFrame(() => {
+                this.transcription.scrollTop = this.transcription.scrollHeight;
+            });
+        } else {
+            this.transcription.scrollTop = this.transcription.scrollHeight;
+        }
     }
     
     processVoiceCommands(text) {
