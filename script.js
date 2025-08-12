@@ -336,89 +336,116 @@ class Speaky {
     }
     
     async startRecording() {
-        // On mobile, we need to initialize recognition when the user taps the button
-        if (this.isMobile && !this.recognition) {
-            const hasWebkitSR = 'webkitSpeechRecognition' in window;
-            const hasSR = 'SpeechRecognition' in window;
-            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-            
-            if (!hasWebkitSR && !hasSR) {
-                this.showNotification('Speech recognition not available on this device', 'error');
-                return;
-            }
-            
-            this.recognition = new SpeechRecognition();
-            this.recognition.continuous = true;
-            this.recognition.interimResults = true;
-            this.recognition.lang = this.language.value;
-            
-            // Set up event handlers
-            this.recognition.onresult = (event) => {
-                let interimTranscript = '';
-                let finalTranscript = '';
-                
-                for (let i = event.resultIndex; i < event.results.length; i++) {
-                    const transcript = event.results[i][0].transcript;
-                    if (event.results[i].isFinal) {
-                        finalTranscript += transcript + ' ';
-                    } else {
-                        interimTranscript += transcript;
-                    }
-                }
-                
-                this.updateTranscript(finalTranscript, interimTranscript);
-            };
-            
-            this.recognition.onerror = (event) => {
-                console.error('Speech recognition error:', event.error);
-                let errorMessage = `Error: ${event.error}`;
-                
-                switch (event.error) {
-                    case 'not-allowed':
-                        errorMessage = 'Microphone access denied. Please enable in browser settings.';
-                        break;
-                    case 'no-speech':
-                        errorMessage = 'No speech detected. Try speaking closer to the microphone.';
-                        setTimeout(() => {
-                            if (this.isRecording) {
-                                try {
-                                    this.recognition.start();
-                                } catch (e) {}
-                            }
-                        }, 1000);
-                        return;
-                }
-                
-                this.showNotification(errorMessage, 'error');
-                this.stopRecording();
-            };
-            
-            this.recognition.onend = () => {
-                if (this.isRecording) {
-                    try {
-                        this.recognition.start();
-                    } catch (e) {
-                        this.stopRecording();
-                    }
-                }
-            };
-        }
-        
+        // Show recording state immediately
         this.isRecording = true;
         this.micButton.classList.add('recording');
         this.micIcon.className = 'fas fa-stop';
-        this.status.textContent = 'Recording... Speak now!';
+        this.status.textContent = 'Initializing...';
         this.status.classList.add('recording');
         
-        // Request microphone permission explicitly
+        // On mobile, we need to initialize recognition when the user taps the button
+        if (this.isMobile) {
+            try {
+                // First, request microphone permission
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                // Stop all tracks to release the microphone immediately after permission
+                stream.getTracks().forEach(track => track.stop());
+                
+                // Initialize recognition after getting permission
+                if (!this.recognition) {
+                    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+                    if (!SpeechRecognition) {
+                        throw new Error('Speech recognition not supported');
+                    }
+                    
+                    this.recognition = new SpeechRecognition();
+                    this.recognition.continuous = true;
+                    this.recognition.interimResults = true;
+                    this.recognition.lang = this.language.value;
+                    
+                    // Set up event handlers
+                    this.recognition.onresult = (event) => {
+                        let interimTranscript = '';
+                        let finalTranscript = '';
+                        
+                        for (let i = event.resultIndex; i < event.results.length; i++) {
+                            const transcript = event.results[i][0].transcript;
+                            if (event.results[i].isFinal) {
+                                finalTranscript += transcript + ' ';
+                            } else {
+                                interimTranscript += transcript;
+                            }
+                        }
+                        
+                        this.updateTranscript(finalTranscript, interimTranscript);
+                        this.status.textContent = 'Listening...';
+                    };
+                    
+                    this.recognition.onerror = (event) => {
+                        console.error('Speech recognition error:', event.error);
+                        let errorMessage = `Error: ${event.error}`;
+                        
+                        switch (event.error) {
+                            case 'not-allowed':
+                                errorMessage = 'Microphone access denied. Please enable in browser settings.';
+                                break;
+                            case 'no-speech':
+                                errorMessage = 'No speech detected. Try speaking closer to the microphone.';
+                                return; // Don't show error for no-speech
+                            case 'audio-capture':
+                                errorMessage = 'No microphone found. Please check your device settings.';
+                                break;
+                            case 'not-allowed':
+                                errorMessage = 'Microphone access is blocked. Please allow access in your browser settings.';
+                                break;
+                        }
+                        
+                        this.showNotification(errorMessage, 'error');
+                        this.stopRecording();
+                    };
+                    
+                    this.recognition.onend = () => {
+                        if (this.isRecording) {
+                            try {
+                                this.recognition.start();
+                            } catch (e) {
+                                console.error('Failed to restart recognition:', e);
+                                this.stopRecording();
+                            }
+                        }
+                    };
+                }
+                
+                // Start recognition after a small delay to ensure everything is ready
+                await new Promise(resolve => setTimeout(resolve, 100));
+                this.status.textContent = 'Listening...';
+                this.recognition.start();
+                return; // Exit early for mobile
+                
+            } catch (error) {
+                console.error('Mobile recording error:', error);
+                this.showNotification('Failed to access microphone. ' + (error.message || ''), 'error');
+                this.stopRecording();
+                return;
+            }
+        }
+        
+        // Desktop recording flow
         try {
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            const stream = await navigator.mediaDevices.getUserMedia({ 
+                audio: {
+                    echoCancellation: true,
+                    noiseSuppression: true,
+                    autoGainControl: true
+                }
+            });
             // Stop all tracks to release the microphone
             stream.getTracks().forEach(track => track.stop());
             
             // Small delay to ensure permission is fully granted
             await new Promise(resolve => setTimeout(resolve, 100));
             
+            this.status.textContent = 'Listening...';
             this.recognition.start();
         } catch (error) {
             console.error('Microphone access error:', error);
