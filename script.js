@@ -78,13 +78,17 @@ class Speaky {
     }
     
     async initSpeechRecognition() {
+        // Chrome-specific check for mobile
+        const isChromeMobile = /Chrome\/[0-9]+\./i.test(navigator.userAgent) && 
+                             /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+        
         // Check for speech recognition support with mobile-specific handling
         const hasWebkitSR = 'webkitSpeechRecognition' in window;
         const hasSR = 'SpeechRecognition' in window;
         
         if (!hasWebkitSR && !hasSR) {
-            const message = this.isMobile ? 
-                'Speech recognition not supported on this mobile browser. Try Chrome or Safari.' : 
+            const message = isChromeMobile ? 
+                'Please update Chrome to the latest version for best results.' : 
                 'Speech recognition not supported in this browser. Use Chrome, Edge, or Safari.';
             this.showNotification(message, 'error');
             return;
@@ -94,6 +98,11 @@ class Speaky {
         if (this.isMobile && !window.isSecureContext) {
             this.showNotification('Speech recognition requires HTTPS on mobile devices', 'error');
             return;
+        }
+        
+        // Mobile-specific: Add touch event listener for better mobile support
+        if (this.isMobile) {
+            document.body.addEventListener('touchstart', this.handleTouchStart.bind(this), { once: true });
         }
 
         // Request microphone permission with mobile-specific handling
@@ -133,8 +142,15 @@ class Speaky {
         // Mobile-specific settings
         if (this.isMobile) {
             this.recognition.grammars = null; // Disable grammars on mobile
-            // Add mobile-specific timeout handling
+            this.recognition.continuous = true; // Enable continuous for Chrome mobile
+            this.recognition.interimResults = true;
             this.mobileTimeout = null;
+            
+            // Chrome mobile specific settings
+            if (/Chrome\/[0-9]+\./i.test(navigator.userAgent)) {
+                this.recognition.maxAlternatives = 5; // More alternatives for better results
+                this.recognition.interimResults = true;
+            }
         }
             
         this.recognition.onstart = () => {
@@ -304,14 +320,22 @@ class Speaky {
         }
     }
     
+    // Mobile-specific touch start handler
+    handleTouchStart() {
+        // This is needed to ensure audio context is resumed after user interaction
+        if (this.isMobile && typeof AudioContext !== 'undefined') {
+            const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            if (audioContext.state === 'suspended') {
+                audioContext.resume();
+            }
+        }
+    }
+    
     startRecording() {
-        
         if (!this.recognition) {
             this.showNotification('Speech recognition not available', 'error');
             return;
         }
-        
-
         
         this.isRecording = true;
         this.micButton.classList.add('recording');
@@ -319,14 +343,26 @@ class Speaky {
         this.status.textContent = 'Recording... Speak now!';
         this.status.classList.add('recording');
         
-        // Mobile-specific: Add loading state
+        // Mobile-specific: Add loading state and ensure proper permissions
         if (this.isMobile) {
             this.status.textContent = 'Starting... Please wait';
+            
+            // Reset any previous recognition
+            if (this.recognition) {
+                try { this.recognition.stop(); } catch(e) {}
+            }
+            
+            // Re-initialize recognition for mobile
+            this.initSpeechRecognition();
+            
+            // Add a small delay to ensure recognition is ready
             setTimeout(() => {
                 if (this.isRecording) {
                     this.status.textContent = 'Recording... Speak now!';
+                    this.recognition.start();
                 }
-            }, 1000);
+            }, 500);
+            return;
         }
         
         try {
@@ -353,6 +389,17 @@ class Speaky {
         }
     }
 
+    // Force UI update on mobile
+    forceMobileUpdate() {
+        if (!this.isMobile) return;
+        
+        // Force a reflow and update
+        const container = this.transcription;
+        container.style.display = 'none';
+        container.offsetHeight; // Trigger reflow
+        container.style.display = 'block';
+    }
+    
     stopRecording() {
         this.isRecording = false;
         this.micButton.classList.remove('recording');
@@ -362,63 +409,85 @@ class Speaky {
         this.stopTimer();
         
         if (this.recognition) {
-            this.recognition.stop();
+            try {
+                this.recognition.stop();
+            } catch (e) {
+                console.log('Error stopping recognition:', e);
+            }
         }
     }
 
     updateTranscript(finalText, interimText) {
+        console.log('updateTranscript called with:', {finalText, interimText});
         
-        if (finalText) {
-            let processedText = this.processVoiceCommands(finalText);
-            processedText = this.applyAutoPunctuation(processedText);
-            this.transcriptText += processedText;
-        }
-        
-        let displayText = this.transcriptText;
-        if (interimText) {
-            displayText += `<span class="interim">${interimText}</span>`;
-        }
-        
-        if (displayText.trim()) {
-            const placeholder = this.transcription.querySelector('.placeholder');
-            if (placeholder) {
-                placeholder.remove();
-            }
-            
-            displayText = displayText.replace(/\n/g, '<br>');
-            
-            // Mobile-specific DOM update with forced reflow
-            if (this.isMobile) {
-                this.transcription.style.display = 'none';
-                this.transcription.innerHTML = displayText;
-                this.transcription.offsetHeight; // Force reflow
-                this.transcription.style.display = 'block';
+        try {
+            if (finalText) {
+                let processedText = this.processVoiceCommands(finalText);
+                processedText = this.applyAutoPunctuation(processedText);
                 
-                // Ensure contenteditable is properly set
-                this.transcription.setAttribute('contenteditable', 'true');
-            } else {
-                this.transcription.innerHTML = displayText;
+                // Chrome mobile sometimes sends empty final results, filter them out
+                if (processedText.trim() === '' && this.isMobile) {
+                    console.log('Skipping empty final text on mobile');
+                    return;
+                }
+                
+                this.transcriptText += processedText;
+                console.log('Updated transcriptText:', this.transcriptText);
+                
+                // Force UI update on mobile
+                if (this.isMobile) {
+                    this.forceMobileUpdate();
+                }
             }
-        } else if (document.activeElement !== this.transcription) {
-            this.transcription.innerHTML = `
-                <div class="placeholder">
-                    <i class="fas fa-comment-dots"></i>
-                    <p>Your transcribed text will appear here</p>
-                    <small>Click the microphone and start speaking, or click here to edit manually</small>
-                </div>
-            `;
-        }
-        
-        this.updateStats();
-        
-        // Mobile-specific scrolling
-        if (this.isMobile) {
-            // Use requestAnimationFrame for smoother scrolling on mobile
-            requestAnimationFrame(() => {
+            
+            let displayText = this.transcriptText;
+            if (interimText) {
+                displayText += `<span class="interim">${interimText}</span>`;
+            }
+            
+            if (displayText.trim()) {
+                const placeholder = this.transcription.querySelector('.placeholder');
+                if (placeholder) {
+                    placeholder.remove();
+                }
+                
+                displayText = displayText.replace(/\n/g, '<br>');
+                
+                // Mobile-specific DOM update with forced reflow
+                if (this.isMobile) {
+                    this.transcription.style.display = 'none';
+                    this.transcription.innerHTML = displayText;
+                    this.transcription.offsetHeight; // Force reflow
+                    this.transcription.style.display = 'block';
+                    
+                    // Ensure contenteditable is properly set
+                    this.transcription.setAttribute('contenteditable', 'true');
+                } else {
+                    this.transcription.innerHTML = displayText;
+                }
+            } else if (document.activeElement !== this.transcription) {
+                this.transcription.innerHTML = `
+                    <div class="placeholder">
+                        <i class="fas fa-comment-dots"></i>
+                        <p>Your transcribed text will appear here</p>
+                        <small>Click the microphone and start speaking, or click here to edit manually</small>
+                    </div>
+                `;
+            }
+            
+            this.updateStats();
+            
+            // Auto-scroll to bottom for better mobile UX
+            if (this.isMobile) {
+                // Use requestAnimationFrame for smoother scrolling on mobile
+                requestAnimationFrame(() => {
+                    this.transcription.scrollTop = this.transcription.scrollHeight;
+                });
+            } else {
                 this.transcription.scrollTop = this.transcription.scrollHeight;
-            });
-        } else {
-            this.transcription.scrollTop = this.transcription.scrollHeight;
+            }
+        } catch (error) {
+            console.error('Error in updateTranscript:', error);
         }
     }
     
@@ -429,6 +498,7 @@ class Speaky {
             'new line': '\n',
             'new paragraph': '\n\n',
             'period': '.',
+            'full stop': '.',
             'comma': ',',
             'question mark': '?',
             'exclamation mark': '!',
@@ -725,4 +795,3 @@ class Speaky {
 document.addEventListener('DOMContentLoaded', () => {
     new Speaky();
 });
-
