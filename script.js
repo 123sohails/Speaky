@@ -436,7 +436,19 @@ class Speaky {
                 // Start recognition after a small delay to ensure everything is ready
                 await new Promise(resolve => setTimeout(resolve, 100));
                 this.status.textContent = 'Listening...';
-                this.recognition.start();
+                
+                // Check if recognition is not already running
+                if (this.recognition && !this.recognition.running) {
+                    try {
+                        this.recognition.start();
+                    } catch (error) {
+                        console.error('Error starting recognition:', error);
+                        this.showNotification('Failed to start recording', 'error');
+                        this.stopRecording();
+                    }
+                } else {
+                    console.log('Recognition already running');
+                }
                 return; // Exit early for mobile
                 
             } catch (error) {
@@ -463,7 +475,19 @@ class Speaky {
             await new Promise(resolve => setTimeout(resolve, 100));
             
             this.status.textContent = 'Listening...';
-            this.recognition.start();
+            
+            // Check if recognition is not already running
+            if (this.recognition && !this.recognition.running) {
+                try {
+                    this.recognition.start();
+                } catch (error) {
+                    console.error('Error starting recognition:', error);
+                    this.showNotification('Failed to start recording', 'error');
+                    this.stopRecording();
+                }
+            } else {
+                console.log('Recognition already running');
+            }
         } catch (error) {
             console.error('Microphone access error:', error);
             this.showNotification('Microphone access denied. Please allow access to use speech recognition.', 'error');
