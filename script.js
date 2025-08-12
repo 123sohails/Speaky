@@ -103,6 +103,10 @@ class Speaky {
         // Mobile-specific: Add touch event listener for better mobile support
         if (this.isMobile) {
             document.body.addEventListener('touchstart', this.handleTouchStart.bind(this), { once: true });
+            
+            // On mobile, we'll request permissions when the user taps the mic button
+            // rather than during initialization
+            return;
         }
 
         // Request microphone permission with mobile-specific handling
@@ -331,10 +335,73 @@ class Speaky {
         }
     }
     
-    startRecording() {
-        if (!this.recognition) {
-            this.showNotification('Speech recognition not available', 'error');
-            return;
+    async startRecording() {
+        // On mobile, we need to initialize recognition when the user taps the button
+        if (this.isMobile && !this.recognition) {
+            const hasWebkitSR = 'webkitSpeechRecognition' in window;
+            const hasSR = 'SpeechRecognition' in window;
+            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+            
+            if (!hasWebkitSR && !hasSR) {
+                this.showNotification('Speech recognition not available on this device', 'error');
+                return;
+            }
+            
+            this.recognition = new SpeechRecognition();
+            this.recognition.continuous = true;
+            this.recognition.interimResults = true;
+            this.recognition.lang = this.language.value;
+            
+            // Set up event handlers
+            this.recognition.onresult = (event) => {
+                let interimTranscript = '';
+                let finalTranscript = '';
+                
+                for (let i = event.resultIndex; i < event.results.length; i++) {
+                    const transcript = event.results[i][0].transcript;
+                    if (event.results[i].isFinal) {
+                        finalTranscript += transcript + ' ';
+                    } else {
+                        interimTranscript += transcript;
+                    }
+                }
+                
+                this.updateTranscript(finalTranscript, interimTranscript);
+            };
+            
+            this.recognition.onerror = (event) => {
+                console.error('Speech recognition error:', event.error);
+                let errorMessage = `Error: ${event.error}`;
+                
+                switch (event.error) {
+                    case 'not-allowed':
+                        errorMessage = 'Microphone access denied. Please enable in browser settings.';
+                        break;
+                    case 'no-speech':
+                        errorMessage = 'No speech detected. Try speaking closer to the microphone.';
+                        setTimeout(() => {
+                            if (this.isRecording) {
+                                try {
+                                    this.recognition.start();
+                                } catch (e) {}
+                            }
+                        }, 1000);
+                        return;
+                }
+                
+                this.showNotification(errorMessage, 'error');
+                this.stopRecording();
+            };
+            
+            this.recognition.onend = () => {
+                if (this.isRecording) {
+                    try {
+                        this.recognition.start();
+                    } catch (e) {
+                        this.stopRecording();
+                    }
+                }
+            };
         }
         
         this.isRecording = true;
@@ -343,26 +410,20 @@ class Speaky {
         this.status.textContent = 'Recording... Speak now!';
         this.status.classList.add('recording');
         
-        // Mobile-specific: Add loading state and ensure proper permissions
-        if (this.isMobile) {
-            this.status.textContent = 'Starting... Please wait';
+        // Request microphone permission explicitly
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            // Stop all tracks to release the microphone
+            stream.getTracks().forEach(track => track.stop());
             
-            // Reset any previous recognition
-            if (this.recognition) {
-                try { this.recognition.stop(); } catch(e) {}
-            }
+            // Small delay to ensure permission is fully granted
+            await new Promise(resolve => setTimeout(resolve, 100));
             
-            // Re-initialize recognition for mobile
-            this.initSpeechRecognition();
-            
-            // Add a small delay to ensure recognition is ready
-            setTimeout(() => {
-                if (this.isRecording) {
-                    this.status.textContent = 'Recording... Speak now!';
-                    this.recognition.start();
-                }
-            }, 500);
-            return;
+            this.recognition.start();
+        } catch (error) {
+            console.error('Microphone access error:', error);
+            this.showNotification('Microphone access denied. Please allow access to use speech recognition.', 'error');
+            this.stopRecording();
         }
         
         try {
