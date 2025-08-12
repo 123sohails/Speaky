@@ -13,7 +13,9 @@ class Speaky {
         this.mediaStream = null;
         this.restarting = false;
         this.notificationTimeout = null;
-        this.recognitionState = 'stopped'; // 'stopped', 'starting', 'running', 'stopping'
+        this.recognitionState = 'stopped';
+        this.lastFinalTranscript = '';
+        this.lastUpdateTime = 0;
         
         this.initElements();
         this.initSpeechRecognition();
@@ -135,22 +137,19 @@ class Speaky {
         const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
         this.recognition = new SpeechRecognition();
         
-        this.recognition.continuous = !this.isMobile;
-        this.recognition.interimResults = true;
-        this.recognition.lang = this.language.value;
-        this.recognition.maxAlternatives = 1;
-        
+        // Mobile-specific settings
         if (this.isMobile) {
-            this.recognition.grammars = null;
+            this.recognition.continuous = true; // Changed to true for mobile
+            this.recognition.interimResults = false; // Disable interim results on mobile
+            this.recognition.maxAlternatives = 1;
+            this.mobileTimeout = null;
+        } else {
             this.recognition.continuous = true;
             this.recognition.interimResults = true;
-            this.mobileTimeout = null;
-            
-            if (/Chrome\/[0-9]+\./i.test(navigator.userAgent)) {
-                this.recognition.maxAlternatives = 5;
-                this.recognition.interimResults = true;
-            }
+            this.recognition.maxAlternatives = 1;
         }
+        
+        this.recognition.lang = this.language.value;
             
         this.recognition.onstart = () => {
             console.log('Speech recognition started');
@@ -168,21 +167,40 @@ class Speaky {
         };
         
         this.recognition.onresult = (event) => {
-            let interimTranscript = '';
-            let finalTranscript = '';
-            
-            for (let i = event.resultIndex; i < event.results.length; i++) {
-                const transcript = event.results[i][0].transcript;
-                const confidence = event.results[i][0].confidence;
-                
-                if (event.results[i].isFinal) {
-                    finalTranscript += transcript + ' ';
-                } else {
-                    interimTranscript += transcript;
+            // Mobile-specific handling
+            if (this.isMobile) {
+                const now = Date.now();
+                if (now - this.lastUpdateTime < 300) { // 300ms throttle window
+                    return;
                 }
+                this.lastUpdateTime = now;
+
+                let finalTranscript = '';
+                for (let i = event.resultIndex; i < event.results.length; i++) {
+                    if (event.results[i].isFinal) {
+                        finalTranscript += event.results[i][0].transcript + ' ';
+                    }
+                }
+                
+                if (finalTranscript.trim()) {
+                    this.updateTranscript(finalTranscript, '');
+                }
+            } else {
+                // Desktop handling
+                let interimTranscript = '';
+                let finalTranscript = '';
+                
+                for (let i = event.resultIndex; i < event.results.length; i++) {
+                    const transcript = event.results[i][0].transcript;
+                    if (event.results[i].isFinal) {
+                        finalTranscript += transcript + ' ';
+                    } else {
+                        interimTranscript += transcript;
+                    }
+                }
+                
+                this.updateTranscript(finalTranscript, interimTranscript);
             }
-            
-            this.updateTranscript(finalTranscript, interimTranscript);
         };
         
         this.recognition.onerror = (event) => {
@@ -361,26 +379,27 @@ class Speaky {
                     }
                     
                     this.recognition = new SpeechRecognition();
-                    this.recognition.continuous = true;
-                    this.recognition.interimResults = true;
+                    this.recognition.continuous = true; // Changed to true for mobile
+                    this.recognition.interimResults = false; // Disabled for mobile
                     this.recognition.lang = this.language.value;
                     this.recognitionState = 'stopped';
                     
                     this.recognition.onresult = (event) => {
-                        let interimTranscript = '';
+                        const now = Date.now();
+                        if (now - this.lastUpdateTime < 300) return;
+                        this.lastUpdateTime = now;
+
                         let finalTranscript = '';
-                        
                         for (let i = event.resultIndex; i < event.results.length; i++) {
-                            const transcript = event.results[i][0].transcript;
                             if (event.results[i].isFinal) {
-                                finalTranscript += transcript + ' ';
-                            } else {
-                                interimTranscript += transcript;
+                                finalTranscript += event.results[i][0].transcript + ' ';
                             }
                         }
                         
-                        this.updateTranscript(finalTranscript, interimTranscript);
-                        this.status.textContent = 'Listening...';
+                        if (finalTranscript.trim()) {
+                            this.updateTranscript(finalTranscript, '');
+                            this.status.textContent = 'Listening...';
+                        }
                     };
                     
                     this.recognition.onerror = (event) => {
@@ -470,15 +489,6 @@ class Speaky {
         }
     }
 
-    forceMobileUpdate() {
-        if (!this.isMobile) return;
-        
-        const container = this.transcription;
-        container.style.display = 'none';
-        container.offsetHeight;
-        container.style.display = 'block';
-    }
-    
     stopRecording() {
         this.isRecording = false;
         this.micButton.classList.remove('recording');
@@ -513,28 +523,29 @@ class Speaky {
     }
 
     updateTranscript(finalText, interimText) {
-        console.log('updateTranscript called with:', {finalText, interimText});
-        
+        // Skip empty results
+        if ((!finalText || finalText.trim() === '') && (!interimText || interimText.trim() === '')) {
+            return;
+        }
+
         try {
             if (finalText) {
                 let processedText = this.processVoiceCommands(finalText);
                 processedText = this.applyAutoPunctuation(processedText);
                 
-                if (processedText.trim() === '' && this.isMobile && !interimText) {
-                    console.log('Skipping empty final text on mobile');
+                // Skip empty processed text
+                if (processedText.trim() === '') {
                     return;
                 }
                 
-                this.transcriptText += processedText;
-                console.log('Updated transcriptText:', this.transcriptText);
-                
-                if (this.isMobile) {
-                    this.forceMobileUpdate();
+                // Only append if it's not already at the end of our transcript
+                if (!this.transcriptText.endsWith(processedText)) {
+                    this.transcriptText += processedText;
                 }
             }
             
             let displayText = this.transcriptText;
-            if (interimText) {
+            if (interimText && !this.isMobile) {  // Only show interim on desktop
                 displayText += `<span class="interim">${interimText}</span>`;
             }
             
@@ -546,11 +557,13 @@ class Speaky {
                 
                 displayText = displayText.replace(/\n/g, '<br>');
                 
+                // Mobile-specific handling to ensure text appears
                 if (this.isMobile) {
-                    this.transcription.style.display = 'none';
+                    // First clear the content
+                    this.transcription.textContent = '';
+                    // Then add new content
                     this.transcription.innerHTML = displayText;
-                    this.transcription.offsetHeight;
-                    this.transcription.style.display = 'block';
+                    // Ensure it's editable
                     this.transcription.setAttribute('contenteditable', 'true');
                 } else {
                     this.transcription.innerHTML = displayText;
@@ -561,13 +574,10 @@ class Speaky {
             
             this.updateStats();
             
-            if (this.isMobile) {
-                requestAnimationFrame(() => {
-                    this.transcription.scrollTop = this.transcription.scrollHeight;
-                });
-            } else {
+            // Auto-scroll to bottom
+            requestAnimationFrame(() => {
                 this.transcription.scrollTop = this.transcription.scrollHeight;
-            }
+            });
         } catch (error) {
             console.error('Error in updateTranscript:', error);
         }
@@ -667,6 +677,7 @@ class Speaky {
     
     clearText() {
         this.transcriptText = '';
+        this.lastFinalTranscript = '';
         this.showPlaceholder();
         this.timeCount.textContent = '00:00';
         this.showNotification('Text cleared', 'success');
