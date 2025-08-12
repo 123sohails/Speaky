@@ -10,15 +10,6 @@ class Speaky {
         this.isMobile = this.detectMobile();
         this.mobileTimeout = null;
         
-        // Mobile debugging
-        if (this.isMobile) {
-            this.debugLog('Mobile device detected');
-            this.debugLog(`User Agent: ${navigator.userAgent}`);
-            this.debugLog(`Secure Context: ${window.isSecureContext}`);
-            this.debugLog(`HTTPS: ${location.protocol === 'https:'}`);
-            this.addMobileTestButton();
-        }
-        
         this.initElements();
         this.initSpeechRecognition();
         this.initEvents();
@@ -87,31 +78,25 @@ class Speaky {
     }
     
     async initSpeechRecognition() {
-        this.debugLog('initSpeechRecognition started');
-        
         // Check for speech recognition support with mobile-specific handling
         const hasWebkitSR = 'webkitSpeechRecognition' in window;
         const hasSR = 'SpeechRecognition' in window;
-        this.debugLog(`webkitSpeechRecognition: ${hasWebkitSR}, SpeechRecognition: ${hasSR}`);
         
         if (!hasWebkitSR && !hasSR) {
             const message = this.isMobile ? 
                 'Speech recognition not supported on this mobile browser. Try Chrome or Safari.' : 
                 'Speech recognition not supported in this browser. Use Chrome, Edge, or Safari.';
             this.showNotification(message, 'error');
-            this.debugLog('Speech recognition not supported');
             return;
         }
 
         // Mobile-specific: Check if we're in a secure context
         if (this.isMobile && !window.isSecureContext) {
             this.showNotification('Speech recognition requires HTTPS on mobile devices', 'error');
-            this.debugLog('Not in secure context');
             return;
         }
 
         // Request microphone permission with mobile-specific handling
-        this.debugLog('Requesting microphone permission...');
         try {
             const stream = await navigator.mediaDevices.getUserMedia({ 
                 audio: {
@@ -125,12 +110,10 @@ class Speaky {
             
             // Important: Stop the stream immediately after permission check
             stream.getTracks().forEach(track => track.stop());
-            this.debugLog('Microphone permission granted');
             
             this.showNotification('Microphone access granted!', 'success');
         } catch (error) {
             console.error('Microphone access error:', error);
-            this.debugLog(`Microphone error: ${error.name} - ${error.message}`);
             const message = this.isMobile ? 
                 'Please allow microphone access in your browser settings and refresh the page. Make sure you\'re using HTTPS.' : 
                 'Please allow microphone access to use speech recognition';
@@ -140,15 +123,12 @@ class Speaky {
 
         const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
         this.recognition = new SpeechRecognition();
-        this.debugLog('SpeechRecognition instance created');
         
         // Mobile-optimized settings
         this.recognition.continuous = !this.isMobile; // Disable continuous on mobile for better stability
         this.recognition.interimResults = true;
         this.recognition.lang = this.language.value;
         this.recognition.maxAlternatives = 1;
-        
-        this.debugLog(`Settings: continuous=${this.recognition.continuous}, interimResults=${this.recognition.interimResults}, lang=${this.recognition.lang}`);
         
         // Mobile-specific settings
         if (this.isMobile) {
@@ -159,7 +139,6 @@ class Speaky {
             
         this.recognition.onstart = () => {
             console.log('Speech recognition started');
-            this.debugLog('Recognition started');
             this.startTimer();
             
             // Mobile-specific: Set a timeout to prevent hanging
@@ -167,7 +146,6 @@ class Speaky {
                 this.mobileTimeout = setTimeout(() => {
                     if (this.isRecording) {
                         console.log('Mobile timeout reached, restarting recognition');
-                        this.debugLog('Mobile timeout reached, restarting');
                         this.recognition.stop();
                     }
                 }, 30000); // 30 second timeout
@@ -175,21 +153,12 @@ class Speaky {
         };
         
         this.recognition.onresult = (event) => {
-            this.debugLog(`Recognition result received: ${event.results.length} results`);
-            
-            // Clear mobile timeout on successful result
-            if (this.isMobile && this.mobileTimeout) {
-                clearTimeout(this.mobileTimeout);
-                this.mobileTimeout = null;
-            }
-            
             let interimTranscript = '';
             let finalTranscript = '';
             
             for (let i = event.resultIndex; i < event.results.length; i++) {
                 const transcript = event.results[i][0].transcript;
                 const confidence = event.results[i][0].confidence;
-                this.debugLog(`Result ${i}: "${transcript}" (final: ${event.results[i].isFinal}, confidence: ${confidence})`);
                 
                 if (event.results[i].isFinal) {
                     finalTranscript += transcript + ' ';
@@ -198,13 +167,11 @@ class Speaky {
                 }
             }
             
-            this.debugLog(`Final: "${finalTranscript}", Interim: "${interimTranscript}"`);
             this.updateTranscript(finalTranscript, interimTranscript);
         };
         
         this.recognition.onerror = (event) => {
             console.error('Speech recognition error:', event.error);
-            this.debugLog(`Recognition error: ${event.error}`);
             
             // Clear mobile timeout on error
             if (this.isMobile && this.mobileTimeout) {
@@ -222,16 +189,13 @@ class Speaky {
                         break;
                     case 'no-speech':
                         errorMessage = 'No speech detected. Try speaking closer to the microphone.';
-                        this.debugLog('No speech detected, attempting restart');
                         // Don't stop recording for no-speech on mobile, just restart
                         setTimeout(() => {
                             if (this.isRecording) {
                                 try {
                                     this.recognition.start();
-                                    this.debugLog('Restarted after no-speech');
                                 } catch (e) {
                                     console.error('Failed to restart after no-speech:', e);
-                                    this.debugLog(`Failed to restart: ${e.message}`);
                                 }
                             }
                         }, 1000);
@@ -246,7 +210,6 @@ class Speaky {
                         errorMessage = 'Speech service not allowed. Try refreshing the page.';
                         break;
                     case 'aborted':
-                        this.debugLog('Recognition aborted (likely intentional)');
                         // Don't show error for aborted on mobile, it's often intentional
                         return;
                 }
@@ -257,7 +220,6 @@ class Speaky {
         };
         
         this.recognition.onend = () => {
-            this.debugLog('Recognition ended');
             
             // Clear mobile timeout
             if (this.isMobile && this.mobileTimeout) {
@@ -266,27 +228,22 @@ class Speaky {
             }
             
             if (this.isRecording) {
-                this.debugLog('Still recording, attempting restart');
                 // Mobile-specific restart logic with exponential backoff
                 const restartDelay = this.isMobile ? 1000 : 100;
                 setTimeout(() => {
                     if (this.isRecording) {
                         try {
                             this.recognition.start();
-                            this.debugLog('Recognition restarted successfully');
                         } catch (error) {
                             console.error('Failed to restart recognition:', error);
-                            this.debugLog(`Restart failed: ${error.message}`);
                             // On mobile, try one more time after a longer delay
                             if (this.isMobile) {
                                 setTimeout(() => {
                                     if (this.isRecording) {
                                         try {
                                             this.recognition.start();
-                                            this.debugLog('Second restart attempt successful');
                                         } catch (e) {
                                             console.error('Final restart attempt failed:', e);
-                                            this.debugLog(`Final restart failed: ${e.message}`);
                                             this.stopRecording();
                                         }
                                     }
@@ -299,8 +256,6 @@ class Speaky {
                 }, restartDelay);
             }
         };
-        
-        this.debugLog('Speech recognition initialization complete');
     }
     
     initEvents() {
@@ -350,22 +305,18 @@ class Speaky {
     }
     
     startRecording() {
-        this.debugLog('startRecording called');
         
         if (!this.recognition) {
-            this.debugLog('No recognition object available');
             this.showNotification('Speech recognition not available', 'error');
             return;
         }
         
         // Mobile-specific: Ensure we have user interaction
         if (this.isMobile && !document.hasStoredUserActivation) {
-            this.debugLog('No user activation stored');
             this.showNotification('Please tap the microphone button to start recording', 'warning');
             return;
         }
         
-        this.debugLog('Setting recording state to true');
         this.isRecording = true;
         this.micButton.classList.add('recording');
         this.micIcon.className = 'fas fa-stop';
@@ -386,15 +337,11 @@ class Speaky {
             // Mobile-specific: Set language again before starting (some mobile browsers reset it)
             if (this.isMobile) {
                 this.recognition.lang = this.language.value;
-                this.debugLog(`Language set to: ${this.recognition.lang}`);
             }
             
-            this.debugLog('Calling recognition.start()');
             this.recognition.start();
-            this.debugLog('recognition.start() called successfully');
         } catch (error) {
             console.error('Failed to start recording:', error);
-            this.debugLog(`Start recording error: ${error.name} - ${error.message}`);
             let errorMessage = 'Failed to start recording';
             
             if (this.isMobile) {
@@ -411,7 +358,6 @@ class Speaky {
     }
 
     stopRecording() {
-        this.debugLog('stopRecording called');
         this.isRecording = false;
         this.micButton.classList.remove('recording');
         this.micIcon.className = 'fas fa-microphone';
@@ -420,20 +366,16 @@ class Speaky {
         this.stopTimer();
         
         if (this.recognition) {
-            this.debugLog('Calling recognition.stop()');
             this.recognition.stop();
         }
     }
 
     updateTranscript(finalText, interimText) {
-        this.debugLog(`updateTranscript called - Final: "${finalText}", Interim: "${interimText}"`);
         
         if (finalText) {
             let processedText = this.processVoiceCommands(finalText);
             processedText = this.applyAutoPunctuation(processedText);
             this.transcriptText += processedText;
-            this.debugLog(`Added to transcript: "${processedText}"`);
-            this.debugLog(`Total transcript now: "${this.transcriptText}"`);
         }
         
         let displayText = this.transcriptText;
@@ -442,19 +384,15 @@ class Speaky {
         }
         
         if (displayText.trim()) {
-            this.debugLog('Updating display with text');
             const placeholder = this.transcription.querySelector('.placeholder');
             if (placeholder) {
                 placeholder.remove();
-                this.debugLog('Removed placeholder');
             }
             
             displayText = displayText.replace(/\n/g, '<br>');
             
             // Mobile-specific DOM update with forced reflow
             if (this.isMobile) {
-                this.debugLog('Mobile DOM update with forced reflow');
-                // Force DOM update on mobile
                 this.transcription.style.display = 'none';
                 this.transcription.innerHTML = displayText;
                 this.transcription.offsetHeight; // Force reflow
@@ -465,9 +403,7 @@ class Speaky {
             } else {
                 this.transcription.innerHTML = displayText;
             }
-            this.debugLog('Display updated successfully');
         } else if (document.activeElement !== this.transcription) {
-            this.debugLog('No text to display, showing placeholder');
             this.transcription.innerHTML = `
                 <div class="placeholder">
                     <i class="fas fa-comment-dots"></i>
@@ -786,118 +722,6 @@ class Speaky {
                 }
             }, 300);
         }, 3000);
-    }
-    
-    debugLog(message) {
-        if (this.isMobile) {
-            console.log(`[SPEAKY DEBUG] ${message}`);
-            // Also show in UI for mobile debugging
-            const debugDiv = document.getElementById('debug') || this.createDebugDiv();
-            debugDiv.innerHTML += `<div>${new Date().toLocaleTimeString()}: ${message}</div>`;
-            debugDiv.scrollTop = debugDiv.scrollHeight;
-        }
-    }
-    
-    createDebugDiv() {
-        const debugDiv = document.createElement('div');
-        debugDiv.id = 'debug';
-        debugDiv.style.cssText = `
-            position: fixed;
-            bottom: 0;
-            left: 0;
-            right: 0;
-            height: 150px;
-            background: rgba(0,0,0,0.9);
-            color: #00ff00;
-            font-family: monospace;
-            font-size: 10px;
-            padding: 10px;
-            overflow-y: auto;
-            z-index: 10000;
-            border-top: 1px solid #333;
-        `;
-        document.body.appendChild(debugDiv);
-        return debugDiv;
-    }
-
-    addMobileTestButton() {
-        const testBtn = document.createElement('button');
-        testBtn.textContent = 'Test Speech API';
-        testBtn.style.cssText = `
-            position: fixed;
-            top: 10px;
-            right: 10px;
-            z-index: 9999;
-            background: #ff6b6b;
-            color: white;
-            border: none;
-            padding: 10px;
-            border-radius: 5px;
-            font-size: 12px;
-        `;
-        testBtn.onclick = () => this.testSpeechAPI();
-        document.body.appendChild(testBtn);
-    }
-
-    testSpeechAPI() {
-        this.debugLog('=== SPEECH API TEST STARTED ===');
-        
-        // Test 1: Check API availability
-        const hasWebkit = 'webkitSpeechRecognition' in window;
-        const hasStandard = 'SpeechRecognition' in window;
-        this.debugLog(`API Check - webkit: ${hasWebkit}, standard: ${hasStandard}`);
-        
-        if (!hasWebkit && !hasStandard) {
-            this.debugLog('TEST FAILED: No Speech Recognition API');
-            return;
-        }
-        
-        // Test 2: Create recognition instance
-        try {
-            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-            const testRecognition = new SpeechRecognition();
-            this.debugLog('TEST PASSED: Recognition instance created');
-            
-            // Test 3: Configure and test
-            testRecognition.continuous = false;
-            testRecognition.interimResults = true;
-            testRecognition.lang = 'en-US';
-            
-            testRecognition.onstart = () => {
-                this.debugLog('TEST: Recognition started successfully');
-            };
-            
-            testRecognition.onresult = (event) => {
-                this.debugLog(`TEST: Got result - ${event.results.length} results`);
-                for (let i = 0; i < event.results.length; i++) {
-                    const transcript = event.results[i][0].transcript;
-                    this.debugLog(`TEST Result ${i}: "${transcript}" (final: ${event.results[i].isFinal})`);
-                }
-            };
-            
-            testRecognition.onerror = (event) => {
-                this.debugLog(`TEST ERROR: ${event.error}`);
-            };
-            
-            testRecognition.onend = () => {
-                this.debugLog('TEST: Recognition ended');
-            };
-            
-            // Test 4: Start recognition
-            this.debugLog('TEST: Attempting to start recognition...');
-            testRecognition.start();
-            
-            // Auto-stop after 5 seconds
-            setTimeout(() => {
-                if (testRecognition) {
-                    testRecognition.stop();
-                    this.debugLog('TEST: Stopped after 5 seconds');
-                }
-            }, 5000);
-            
-        } catch (error) {
-            this.debugLog(`TEST FAILED: ${error.name} - ${error.message}`);
-        }
     }
 }
 
