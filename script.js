@@ -9,6 +9,11 @@ class Speaky {
         this.voiceCommands = false;
         this.isMobile = this.detectMobile();
         this.mobileTimeout = null;
+        this.audioContext = null;
+        this.mediaStream = null;
+        this.restarting = false;
+        this.notificationTimeout = null;
+        this.recognitionState = 'stopped'; // 'stopped', 'starting', 'running', 'stopping'
         
         this.initElements();
         this.initSpeechRecognition();
@@ -35,7 +40,6 @@ class Speaky {
         this.voiceCommandsBtn = document.getElementById('voiceCommandsBtn');
         this.autoPunctuationBtn = document.getElementById('autoPunctuationBtn');
         
-        // Export and share buttons
         this.exportDocBtn = document.getElementById('exportDocBtn');
         this.exportPdfBtn = document.getElementById('exportPdfBtn');
         this.shareWhatsAppBtn = document.getElementById('shareWhatsAppBtn');
@@ -66,23 +70,25 @@ class Speaky {
         
         this.transcription.addEventListener('blur', () => {
             if (this.transcription.textContent.trim() === '') {
-                this.transcription.innerHTML = `
-                    <div class="placeholder">
-                        <i class="fas fa-comment-dots"></i>
-                        <p>Your transcribed text will appear here</p>
-                        <small>Click the microphone and start speaking, or click here to edit manually</small>
-                    </div>
-                `;
+                this.showPlaceholder();
             }
         });
     }
     
+    showPlaceholder() {
+        this.transcription.innerHTML = `
+            <div class="placeholder">
+                <i class="fas fa-comment-dots"></i>
+                <p>Your transcribed text will appear here</p>
+                <small>Click the microphone and start speaking, or click here to edit manually</small>
+            </div>
+        `;
+    }
+    
     async initSpeechRecognition() {
-        // Chrome-specific check for mobile
         const isChromeMobile = /Chrome\/[0-9]+\./i.test(navigator.userAgent) && 
                              /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
         
-        // Check for speech recognition support with mobile-specific handling
         const hasWebkitSR = 'webkitSpeechRecognition' in window;
         const hasSR = 'SpeechRecognition' in window;
         
@@ -94,34 +100,26 @@ class Speaky {
             return;
         }
 
-        // Mobile-specific: Check if we're in a secure context
         if (this.isMobile && !window.isSecureContext) {
             this.showNotification('Speech recognition requires HTTPS on mobile devices', 'error');
             return;
         }
         
-        // Mobile-specific: Add touch event listener for better mobile support
         if (this.isMobile) {
             document.body.addEventListener('touchstart', this.handleTouchStart.bind(this), { once: true });
-            
-            // On mobile, we'll request permissions when the user taps the mic button
-            // rather than during initialization
             return;
         }
 
-        // Request microphone permission with mobile-specific handling
         try {
             const stream = await navigator.mediaDevices.getUserMedia({ 
                 audio: {
                     echoCancellation: true,
                     noiseSuppression: true,
                     autoGainControl: true,
-                    // Mobile-specific: Use lower sample rate for better compatibility
                     sampleRate: this.isMobile ? 16000 : 44100
                 }
             });
             
-            // Important: Stop the stream immediately after permission check
             stream.getTracks().forEach(track => track.stop());
             
             this.showNotification('Microphone access granted!', 'success');
@@ -137,38 +135,35 @@ class Speaky {
         const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
         this.recognition = new SpeechRecognition();
         
-        // Mobile-optimized settings
-        this.recognition.continuous = !this.isMobile; // Disable continuous on mobile for better stability
+        this.recognition.continuous = !this.isMobile;
         this.recognition.interimResults = true;
         this.recognition.lang = this.language.value;
         this.recognition.maxAlternatives = 1;
         
-        // Mobile-specific settings
         if (this.isMobile) {
-            this.recognition.grammars = null; // Disable grammars on mobile
-            this.recognition.continuous = true; // Enable continuous for Chrome mobile
+            this.recognition.grammars = null;
+            this.recognition.continuous = true;
             this.recognition.interimResults = true;
             this.mobileTimeout = null;
             
-            // Chrome mobile specific settings
             if (/Chrome\/[0-9]+\./i.test(navigator.userAgent)) {
-                this.recognition.maxAlternatives = 5; // More alternatives for better results
+                this.recognition.maxAlternatives = 5;
                 this.recognition.interimResults = true;
             }
         }
             
         this.recognition.onstart = () => {
             console.log('Speech recognition started');
+            this.recognitionState = 'running';
             this.startTimer();
             
-            // Mobile-specific: Set a timeout to prevent hanging
             if (this.isMobile) {
                 this.mobileTimeout = setTimeout(() => {
                     if (this.isRecording) {
                         console.log('Mobile timeout reached, restarting recognition');
                         this.recognition.stop();
                     }
-                }, 30000); // 30 second timeout
+                }, 30000);
             }
         };
         
@@ -193,7 +188,6 @@ class Speaky {
         this.recognition.onerror = (event) => {
             console.error('Speech recognition error:', event.error);
             
-            // Clear mobile timeout on error
             if (this.isMobile && this.mobileTimeout) {
                 clearTimeout(this.mobileTimeout);
                 this.mobileTimeout = null;
@@ -201,7 +195,6 @@ class Speaky {
             
             let errorMessage = `Error: ${event.error}`;
             
-            // Mobile-specific error handling
             if (this.isMobile) {
                 switch (event.error) {
                     case 'not-allowed':
@@ -209,17 +202,17 @@ class Speaky {
                         break;
                     case 'no-speech':
                         errorMessage = 'No speech detected. Try speaking closer to the microphone.';
-                        // Don't stop recording for no-speech on mobile, just restart
                         setTimeout(() => {
-                            if (this.isRecording) {
+                            if (this.isRecording && this.recognitionState !== 'running') {
                                 try {
                                     this.recognition.start();
+                                    this.recognitionState = 'starting';
                                 } catch (e) {
                                     console.error('Failed to restart after no-speech:', e);
                                 }
                             }
                         }, 1000);
-                        return; // Don't call stopRecording for no-speech
+                        return;
                     case 'network':
                         errorMessage = 'Network error. Check your internet connection and try again.';
                         break;
@@ -230,7 +223,6 @@ class Speaky {
                         errorMessage = 'Speech service not allowed. Try refreshing the page.';
                         break;
                     case 'aborted':
-                        // Don't show error for aborted on mobile, it's often intentional
                         return;
                 }
             }
@@ -240,28 +232,30 @@ class Speaky {
         };
         
         this.recognition.onend = () => {
+            this.recognitionState = 'stopped';
             
-            // Clear mobile timeout
             if (this.isMobile && this.mobileTimeout) {
                 clearTimeout(this.mobileTimeout);
                 this.mobileTimeout = null;
             }
             
-            if (this.isRecording) {
-                // Mobile-specific restart logic with exponential backoff
+            if (this.isRecording && !this.restarting) {
+                this.restarting = true;
                 const restartDelay = this.isMobile ? 1000 : 100;
                 setTimeout(() => {
-                    if (this.isRecording) {
+                    this.restarting = false;
+                    if (this.isRecording && this.recognitionState === 'stopped') {
                         try {
                             this.recognition.start();
+                            this.recognitionState = 'starting';
                         } catch (error) {
                             console.error('Failed to restart recognition:', error);
-                            // On mobile, try one more time after a longer delay
                             if (this.isMobile) {
                                 setTimeout(() => {
-                                    if (this.isRecording) {
+                                    if (this.isRecording && this.recognitionState === 'stopped') {
                                         try {
                                             this.recognition.start();
+                                            this.recognitionState = 'starting';
                                         } catch (e) {
                                             console.error('Final restart attempt failed:', e);
                                             this.stopRecording();
@@ -285,13 +279,17 @@ class Speaky {
         this.saveBtn.addEventListener('click', () => this.saveText());
         
         this.language.addEventListener('change', () => {
-            if (this.recognition) this.recognition.lang = this.language.value;
+            if (this.recognition) {
+                this.recognition.lang = this.language.value;
+                if (this.isRecording) {
+                    this.recognition.stop();
+                }
+            }
         });
         
         this.voiceCommandsBtn.addEventListener('click', () => this.toggleVoiceCommands());
         this.autoPunctuationBtn.addEventListener('click', () => this.toggleAutoPunctuation());
         
-        // Export and share event listeners
         this.exportDocBtn.addEventListener('click', () => this.exportAsDoc());
         this.exportPdfBtn.addEventListener('click', () => this.exportAsPdf());
         this.shareWhatsAppBtn.addEventListener('click', () => this.shareToWhatsApp());
@@ -299,7 +297,6 @@ class Speaky {
         this.shareDiscordBtn.addEventListener('click', () => this.shareToDiscord());
         this.shareEmailBtn.addEventListener('click', () => this.shareViaEmail());
         
-        // Keyboard shortcuts
         document.addEventListener('keydown', (e) => {
             if (e.ctrlKey && e.shiftKey && e.key === 'S') {
                 e.preventDefault();
@@ -314,6 +311,11 @@ class Speaky {
                 this.copyText();
             }
         });
+
+        window.addEventListener('unhandledrejection', (event) => {
+            console.error('Unhandled rejection:', event.reason);
+            this.showNotification('An unexpected error occurred', 'error');
+        });
     }
     
     toggleRecording() {
@@ -324,43 +326,34 @@ class Speaky {
         }
     }
     
-    // Mobile-specific touch start handler
     handleTouchStart() {
-        // This is needed to ensure audio context is resumed after user interaction
         if (this.isMobile && typeof AudioContext !== 'undefined') {
-            const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-            if (audioContext.state === 'suspended') {
-                audioContext.resume();
+            this.audioContext = this.audioContext || new (window.AudioContext || window.webkitAudioContext)();
+            if (this.audioContext.state === 'suspended') {
+                this.audioContext.resume();
             }
         }
     }
     
     async startRecording() {
-        // Prevent multiple starts
         if (this.isRecording) {
             console.log('Recording already in progress');
             return;
         }
         
-        // Show recording state immediately
         this.isRecording = true;
         this.micButton.classList.add('recording');
         this.micIcon.className = 'fas fa-stop';
         this.status.textContent = 'Initializing...';
         this.status.classList.add('recording');
         
-        // Add a small delay to ensure UI updates
         await new Promise(resolve => setTimeout(resolve, 50));
         
-        // On mobile, we need to initialize recognition when the user taps the button
         if (this.isMobile) {
             try {
-                // First, request microphone permission
-                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                // Stop all tracks to release the microphone immediately after permission
-                stream.getTracks().forEach(track => track.stop());
+                this.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                this.mediaStream.getTracks().forEach(track => track.stop());
                 
-                // Initialize recognition after getting permission
                 if (!this.recognition) {
                     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
                     if (!SpeechRecognition) {
@@ -371,11 +364,8 @@ class Speaky {
                     this.recognition.continuous = true;
                     this.recognition.interimResults = true;
                     this.recognition.lang = this.language.value;
+                    this.recognitionState = 'stopped';
                     
-                    // Track if recognition is running
-                    this.recognition.isRunning = false;
-                    
-                    // Set up event handlers
                     this.recognition.onresult = (event) => {
                         let interimTranscript = '';
                         let finalTranscript = '';
@@ -403,7 +393,7 @@ class Speaky {
                                 break;
                             case 'no-speech':
                                 errorMessage = 'No speech detected. Try speaking closer to the microphone.';
-                                return; // Don't show error for no-speech
+                                return;
                             case 'audio-capture':
                                 errorMessage = 'No microphone found. Please check your device settings.';
                                 break;
@@ -414,20 +404,20 @@ class Speaky {
                     };
                     
                     this.recognition.onstart = () => {
-                        this.recognition.isRunning = true;
+                        this.recognitionState = 'running';
                         console.log('Speech recognition started');
                     };
                     
                     this.recognition.onend = () => {
-                        this.recognition.isRunning = false;
-                        if (this.isRecording) {
+                        this.recognitionState = 'stopped';
+                        if (this.isRecording && !this.restarting) {
+                            this.restarting = true;
                             setTimeout(() => {
-                                if (this.isRecording && this.recognition) {
+                                this.restarting = false;
+                                if (this.isRecording && this.recognitionState === 'stopped') {
                                     try {
-                                        if (!this.recognition.isRunning) {
-                                            this.recognition.start();
-                                            this.recognition.isRunning = true;
-                                        }
+                                        this.recognition.start();
+                                        this.recognitionState = 'starting';
                                     } catch (e) {
                                         console.error('Failed to restart recognition:', e);
                                         this.stopRecording();
@@ -438,16 +428,14 @@ class Speaky {
                     };
                 }
                 
-                // Start recognition after a small delay to ensure everything is ready
                 await new Promise(resolve => setTimeout(resolve, 100));
                 this.status.textContent = 'Listening...';
                 
-                // Check if recognition is not already running
-                if (this.recognition && !this.recognition.isRunning) {
+                if (this.recognition && this.recognitionState === 'stopped') {
                     this.recognition.start();
-                    this.recognition.isRunning = true;
+                    this.recognitionState = 'starting';
                 }
-                return; // Exit early for mobile
+                return;
                 
             } catch (error) {
                 console.error('Mobile recording error:', error);
@@ -458,25 +446,22 @@ class Speaky {
         }
         
         try {
-            const stream = await navigator.mediaDevices.getUserMedia({ 
+            this.mediaStream = await navigator.mediaDevices.getUserMedia({ 
                 audio: {
                     echoCancellation: true,
                     noiseSuppression: true,
                     autoGainControl: true
                 }
             });
-            // Stop all tracks to release the microphone
-            stream.getTracks().forEach(track => track.stop());
+            this.mediaStream.getTracks().forEach(track => track.stop());
             
-            // Small delay to ensure permission is fully granted
             await new Promise(resolve => setTimeout(resolve, 100));
             
             this.status.textContent = 'Listening...';
             
-            // Check if recognition is not already running
-            if (this.recognition && !this.recognition.isRunning) {
+            if (this.recognition && this.recognitionState === 'stopped') {
                 this.recognition.start();
-                this.recognition.isRunning = true;
+                this.recognitionState = 'starting';
             }
         } catch (error) {
             console.error('Microphone access error:', error);
@@ -485,14 +470,12 @@ class Speaky {
         }
     }
 
-    // Force UI update on mobile
     forceMobileUpdate() {
         if (!this.isMobile) return;
         
-        // Force a reflow and update
         const container = this.transcription;
         container.style.display = 'none';
-        container.offsetHeight; // Trigger reflow
+        container.offsetHeight;
         container.style.display = 'block';
     }
     
@@ -504,12 +487,28 @@ class Speaky {
         this.status.classList.remove('recording');
         this.stopTimer();
         
+        if (this.mobileTimeout) {
+            clearTimeout(this.mobileTimeout);
+            this.mobileTimeout = null;
+        }
+        
         if (this.recognition) {
             try {
                 this.recognition.stop();
+                this.recognitionState = 'stopping';
             } catch (e) {
                 console.log('Error stopping recognition:', e);
             }
+        }
+        
+        if (this.audioContext) {
+            this.audioContext.close();
+            this.audioContext = null;
+        }
+        
+        if (this.mediaStream) {
+            this.mediaStream.getTracks().forEach(track => track.stop());
+            this.mediaStream = null;
         }
     }
 
@@ -521,8 +520,7 @@ class Speaky {
                 let processedText = this.processVoiceCommands(finalText);
                 processedText = this.applyAutoPunctuation(processedText);
                 
-                // Chrome mobile sometimes sends empty final results, filter them out
-                if (processedText.trim() === '' && this.isMobile) {
+                if (processedText.trim() === '' && this.isMobile && !interimText) {
                     console.log('Skipping empty final text on mobile');
                     return;
                 }
@@ -530,7 +528,6 @@ class Speaky {
                 this.transcriptText += processedText;
                 console.log('Updated transcriptText:', this.transcriptText);
                 
-                // Force UI update on mobile
                 if (this.isMobile) {
                     this.forceMobileUpdate();
                 }
@@ -549,33 +546,22 @@ class Speaky {
                 
                 displayText = displayText.replace(/\n/g, '<br>');
                 
-                // Mobile-specific DOM update with forced reflow
                 if (this.isMobile) {
                     this.transcription.style.display = 'none';
                     this.transcription.innerHTML = displayText;
-                    this.transcription.offsetHeight; // Force reflow
+                    this.transcription.offsetHeight;
                     this.transcription.style.display = 'block';
-                    
-                    // Ensure contenteditable is properly set
                     this.transcription.setAttribute('contenteditable', 'true');
                 } else {
                     this.transcription.innerHTML = displayText;
                 }
             } else if (document.activeElement !== this.transcription) {
-                this.transcription.innerHTML = `
-                    <div class="placeholder">
-                        <i class="fas fa-comment-dots"></i>
-                        <p>Your transcribed text will appear here</p>
-                        <small>Click the microphone and start speaking, or click here to edit manually</small>
-                    </div>
-                `;
+                this.showPlaceholder();
             }
             
             this.updateStats();
             
-            // Auto-scroll to bottom for better mobile UX
             if (this.isMobile) {
-                // Use requestAnimationFrame for smoother scrolling on mobile
                 requestAnimationFrame(() => {
                     this.transcription.scrollTop = this.transcription.scrollHeight;
                 });
@@ -646,8 +632,13 @@ class Speaky {
         const text = this.getTranscriptText();
         if (text.trim()) {
             try {
-                await navigator.clipboard.writeText(text.trim());
-                this.showNotification('Text copied to clipboard!', 'success');
+                const permission = await navigator.permissions.query({ name: 'clipboard-write' });
+                if (permission.state === 'granted' || permission.state === 'prompt') {
+                    await navigator.clipboard.writeText(text.trim());
+                    this.showNotification('Text copied to clipboard!', 'success');
+                } else {
+                    this.fallbackCopyText(text.trim());
+                }
             } catch (err) {
                 this.fallbackCopyText(text.trim());
             }
@@ -676,13 +667,7 @@ class Speaky {
     
     clearText() {
         this.transcriptText = '';
-        this.transcription.innerHTML = `
-            <div class="placeholder">
-                <i class="fas fa-comment-dots"></i>
-                <p>Your transcribed text will appear here</p>
-                <small>Click the microphone and start speaking, or click here to edit manually</small>
-            </div>
-        `;
+        this.showPlaceholder();
         this.timeCount.textContent = '00:00';
         this.showNotification('Text cleared', 'success');
         this.updateStats();
@@ -755,8 +740,17 @@ class Speaky {
                     <script>
                         window.onload = function() {
                             window.print();
-                            setTimeout(() => window.close(), 1000);
+                            setTimeout(() => {
+                                if (!document.hasFocus()) {
+                                    window.close();
+                                }
+                            }, 1000);
                         }
+                        window.onbeforeunload = () => {
+                            if (!document.hasFocus()) {
+                                window.close();
+                            }
+                        };
                     </script>
                 </body>
                 </html>
@@ -855,12 +849,16 @@ class Speaky {
     
     startTimer() {
         this.startTime = Date.now();
-        this.timer = setInterval(() => {
-            const elapsed = Math.floor((Date.now() - this.startTime) / 1000);
-            const minutes = Math.floor(elapsed / 60);
-            const seconds = elapsed % 60;
-            this.timeCount.textContent = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
-        }, 1000);
+        const updateTimer = () => {
+            if (this.isRecording) {
+                const elapsed = Math.floor((Date.now() - this.startTime) / 1000);
+                const minutes = Math.floor(elapsed / 60);
+                const seconds = elapsed % 60;
+                this.timeCount.textContent = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+                requestAnimationFrame(updateTimer);
+            }
+        };
+        updateTimer();
     }
     
     stopTimer() {
@@ -871,12 +869,14 @@ class Speaky {
     }
     
     showNotification(message, type = 'success') {
+        clearTimeout(this.notificationTimeout);
+        
         const notification = document.createElement('div');
         notification.className = `notification ${type}`;
         notification.textContent = message;
         document.body.appendChild(notification);
         
-        setTimeout(() => {
+        this.notificationTimeout = setTimeout(() => {
             notification.style.opacity = '0';
             setTimeout(() => {
                 if (notification.parentNode) {
@@ -887,7 +887,6 @@ class Speaky {
     }
 }
 
-// Initialize the app when DOM is loaded
 document.addEventListener('DOMContentLoaded', () => {
     new Speaky();
 });
