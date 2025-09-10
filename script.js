@@ -295,6 +295,8 @@ class Speaky {
         this.copyBtn.addEventListener('click', () => this.copyText());
         this.clearBtn.addEventListener('click', () => this.clearText());
         this.saveBtn.addEventListener('click', () => this.saveText());
+        document.getElementById('correctGrammarBtn').addEventListener('click', () => this.correctGrammar());
+
         
         this.language.addEventListener('change', () => {
             if (this.recognition) {
@@ -901,3 +903,40 @@ class Speaky {
 document.addEventListener('DOMContentLoaded', () => {
     new Speaky();
 });
+async correctGrammar() {
+    const originalText = this.getTranscriptText();
+    const outputDiv = document.getElementById('correctedOutput');
+
+    if (!originalText.trim()) {
+        this.showNotification('No text to correct!', 'error');
+        return;
+    }
+
+    outputDiv.innerHTML = '<p>Correcting...</p>';
+
+    try {
+        const response = await fetch('https://api.openai.com/v1/completions', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer YOUR_OPENAI_API_KEY' // <-- Replace with your key
+            },
+            body: JSON.stringify({
+                model: "text-davinci-003",
+                prompt: `Correct the grammar and tenses in this text:\n\n${originalText}`,
+                max_tokens: 300
+            })
+        });
+
+        const data = await response.json();
+        const correctedText = data.choices[0].text.trim();
+        outputDiv.innerHTML = `<p>${correctedText}</p>`;
+        this.showNotification('Grammar corrected!', 'success');
+    } catch (error) {
+        console.error(error);
+        outputDiv.innerHTML = '<p>Error correcting text</p>';
+        this.showNotification('Failed to correct grammar', 'error');
+    }
+}
+
+
