@@ -280,39 +280,37 @@ class Speaky {
         this.lastActivityTime = Date.now();
     }
     
-    handleRecognitionError(event) {
-        console.error('Speech recognition error:', event.error, event);
-        this.clearMobileTimeout();
-        
-        const errorMessage = this.getRecognitionErrorMessage(event.error);
-        
-        // Handle specific error types
-        switch (event.error) {
-            case 'no-speech':
-                // Don't show error for no-speech, just restart
-                if (this.isRecording) {
-                    setTimeout(() => this.restartRecognition(), 1000);
-                    return;
-                }
-                break;
-            case 'aborted':
-                // Ignore aborted errors as they're usually intentional
-                return;
-            case 'not-allowed':
-                this.disableMicButton();
-                break;
-        }
-        
-        this.showNotification(errorMessage, 'error');
-        
-        // Attempt to restart for recoverable errors
-        if (this.isRecording && this.isRecoverableError(event.error)) {
-            this.scheduleRestart();
+   handleRecognitionResult(event) {
+    let interimTranscript = '';
+    let finalTranscript = '';
+
+    for (let i = event.resultIndex; i < event.results.length; i++) {
+        const result = event.results[i];
+        const transcript = result[0].transcript;
+
+        if (result.isFinal) {
+            finalTranscript += transcript + ' ';
         } else {
-            this.stopRecording();
+            interimTranscript += transcript;
         }
     }
-    
+
+    // Only append new final transcript
+    if (finalTranscript.trim()) {
+        // Avoid adding duplicates by checking last words
+        const lastWords = this.transcriptText.split(' ').slice(-5).join(' ').trim();
+        if (!finalTranscript.startsWith(lastWords)) {
+            let processedText = this.voiceProcessor.processVoiceCommands(finalTranscript);
+            processedText = this.voiceProcessor.applyAutoPunctuation(processedText);
+            this.transcriptText += processedText;
+        }
+    }
+
+    this.updateTranscriptDisplay(interimTranscript);
+    this.updateStats();
+    this.lastActivityTime = Date.now();
+}
+
     handleRecognitionEnd() {
         console.log('Speech recognition ended');
         this.clearMobileTimeout();
