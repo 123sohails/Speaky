@@ -1219,5 +1219,5 @@ class VoiceCommandProcessor {
 // Initialize when DOM is ready
 document.addEventListener('DOMContentLoaded', () => {
     window.speaky = new Speaky();
-})
+});
     
