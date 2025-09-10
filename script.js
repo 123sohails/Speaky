@@ -919,8 +919,9 @@ async correctGrammar() {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                'Authorization': 'Bearer YOUR_OPENAI_API_KEY' // <-- Replace with your key
-            },
+                'Authorization': 'Bearer YOUR_OPENAI_API_KEY'
+ // <-- Replace with your key
+            },sk
             body: JSON.stringify({
                 model: "text-davinci-003",
                 prompt: `Correct the grammar and tenses in this text:\n\n${originalText}`,
@@ -938,5 +939,6 @@ async correctGrammar() {
         this.showNotification('Failed to correct grammar', 'error');
     }
 }
+
 
 
