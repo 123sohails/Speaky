@@ -7,6 +7,7 @@ class Speaky {
         this.timer = null;
         this.autoPunctuation = false;
         this.voiceCommands = false;
+        this.aipower = false;
         this.isMobile = this.detectMobile();
         this.mobileTimeout = null;
         
@@ -34,9 +35,8 @@ class Speaky {
         this.timeCount = document.getElementById('timeCount');
         this.voiceCommandsBtn = document.getElementById('voiceCommandsBtn');
         this.autoPunctuationBtn = document.getElementById('autoPunctuationBtn');
-        this.correctGrammarBtn = document.getElementById('correctGrammarBtn');
-this.correctedOutput = document.getElementById('correctedOutput');
-
+        this.aipowerBtn=document.getElementById('aipowerBtn');
+       
         
         // Export and share buttons
         this.exportDocBtn = document.getElementById('exportDocBtn');
@@ -286,8 +286,7 @@ this.correctedOutput = document.getElementById('correctedOutput');
         this.copyBtn.addEventListener('click', () => this.copyText());
         this.clearBtn.addEventListener('click', () => this.clearText());
         this.saveBtn.addEventListener('click', () => this.saveText());
-        this.correctGrammarBtn.addEventListener('click', () => this.correctGrammar());
-
+        
         
         this.language.addEventListener('change', () => {
             if (this.recognition) this.recognition.lang = this.language.value;
@@ -295,6 +294,7 @@ this.correctedOutput = document.getElementById('correctedOutput');
         
         this.voiceCommandsBtn.addEventListener('click', () => this.toggleVoiceCommands());
         this.autoPunctuationBtn.addEventListener('click', () => this.toggleAutoPunctuation());
+        this.aipowerBtn.addEventListener('click', () => this.toggleaipower());
         
         // Export and share event listeners
         this.exportDocBtn.addEventListener('click', () => this.exportAsDoc());
@@ -328,6 +328,53 @@ this.correctedOutput = document.getElementById('correctedOutput');
             this.startRecording();
         }
     }
+    async correctGrammarWithAI() {
+    const text = this.getTranscriptText();
+    if (!text.trim()) {
+        this.showNotification('No text to correct', 'warning');
+        return;
+    }
+
+    this.showNotification('Correcting grammar with AI...', 'success');
+
+    try {
+        const response = await fetch('https://api.openai.com/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+              Authorization: `Bearer ${process.env.OPENAI_API_KEY}`
+//replace this safely
+            },
+            body: JSON.stringify({
+                model: "gpt-3.5-turbo",
+                messages: [
+                    {
+                        role: "system",
+                        content: "You are an expert English teacher. Correct grammar, punctuation, and tenses. Keep the text readable."
+                    },
+                    {
+                        role: "user",
+                        content: text
+                    }
+                ],
+                temperature: 0.2
+            })
+        });
+
+        const data = await response.json();
+
+        // Extract the AI-corrected text
+        const correctedText = data.choices[0].message.content;
+        this.transcription.innerText = correctedText || text;
+
+        this.showNotification('Text corrected!', 'success');
+        this.updateStats();
+    } catch (error) {
+        console.error(error);
+        this.showNotification('AI correction failed', 'error');
+    }
+}
+
     
     // Mobile-specific touch start handler
     handleTouchStart() {
@@ -836,6 +883,19 @@ this.correctedOutput = document.getElementById('correctedOutput');
             this.autoPunctuation ? 'success' : 'warning'
         );
     }
+    // ...in your toggleaipower() method, call this when enabling AI power...
+toggleaipower() {
+    this.aipower = !this.aipower;
+    this.aipowerBtn.style.background = this.aipower ? '#10a37f' : '#2f2f2f';
+    this.aipowerBtn.style.color = this.aipower ? 'white' : '#ececf1';
+    this.showNotification(
+        `AI-Powered ${this.aipower ? 'enabled' : 'disabled'}`, 
+        this.aipower ? 'success' : 'warning'
+    );
+    if (this.aipower) {
+        this.correctGrammarWithAI();
+    }
+}
     
     downloadFile(content, mimeType, extension) {
         const blob = new Blob([content], { type: mimeType });
@@ -895,5 +955,9 @@ this.correctedOutput = document.getElementById('correctedOutput');
 // Initialize the app when DOM is loaded
 document.addEventListener('DOMContentLoaded', () => {
     new Speaky();
+    // ...inside your Speaky class...
+
+
+
     
 });
