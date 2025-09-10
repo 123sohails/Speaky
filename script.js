@@ -7,61 +7,41 @@ class Speaky {
         this.timer = null;
         this.autoPunctuation = false;
         this.voiceCommands = false;
-        this.aipower = false;
         this.isMobile = this.detectMobile();
         this.mobileTimeout = null;
-        this.recognitionState = 'stopped'; // 'stopped', 'starting', 'listening', 'processing'
-        this.lastActivityTime = Date.now();
-        this.silenceTimeout = null;
-        this.reconnectAttempts = 0;
-        this.maxReconnectAttempts = 3;
-        
-        // Initialize voice command processor
-        this.voiceProcessor = new VoiceCommandProcessor({
-            voiceCommands: this.voiceCommands,
-            autoPunctuation: this.autoPunctuation,
-            smartFormatting: true
-        });
+        this.audioContext = null;
+        this.mediaStream = null;
+        this.restarting = false;
+        this.notificationTimeout = null;
+        this.recognitionState = 'stopped';
+        this.lastFinalTranscript = '';
+        this.lastUpdateTime = 0;
         
         this.initElements();
         this.initSpeechRecognition();
         this.initEvents();
-        this.loadSettings();
     }
     
     detectMobile() {
-        const userAgent = navigator.userAgent.toLowerCase();
-        const mobileKeywords = ['android', 'webos', 'iphone', 'ipad', 'ipod', 'blackberry', 'iemobile', 'opera mini'];
-        const isMobileUA = mobileKeywords.some(keyword => userAgent.includes(keyword));
-        const isTouchDevice = navigator.maxTouchPoints && navigator.maxTouchPoints > 2 && /macintell/.test(navigator.platform.toLowerCase());
-        
-        return isMobileUA || isTouchDevice;
+        return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) ||
+               (navigator.maxTouchPoints && navigator.maxTouchPoints > 2 && /MacIntel/.test(navigator.platform));
     }
 
     initElements() {
-        // Core elements
         this.micButton = document.getElementById('micBtn');
         this.micIcon = document.getElementById('micIcon');
         this.status = document.getElementById('status');
         this.language = document.getElementById('language');
         this.transcription = document.getElementById('transcription');
-        
-        // Control buttons
         this.copyBtn = document.getElementById('copyBtn');
         this.clearBtn = document.getElementById('clearBtn');
         this.saveBtn = document.getElementById('saveBtn');
-        
-        // Stats display
         this.wordCount = document.getElementById('wordCount');
         this.charCount = document.getElementById('charCount');
         this.timeCount = document.getElementById('timeCount');
-        
-        // Feature toggles
         this.voiceCommandsBtn = document.getElementById('voiceCommandsBtn');
         this.autoPunctuationBtn = document.getElementById('autoPunctuationBtn');
-        this.aipowerBtn = document.getElementById('aipowerBtn');
         
-        // Export and share buttons
         this.exportDocBtn = document.getElementById('exportDocBtn');
         this.exportPdfBtn = document.getElementById('exportPdfBtn');
         this.shareWhatsAppBtn = document.getElementById('shareWhatsAppBtn');
@@ -69,30 +49,18 @@ class Speaky {
         this.shareDiscordBtn = document.getElementById('shareDiscordBtn');
         this.shareEmailBtn = document.getElementById('shareEmailBtn');
         
-        // Validate essential elements exist
-        const essentialElements = ['micButton', 'transcription', 'status'];
-        const missingElements = essentialElements.filter(elem => !this[elem]);
-        if (missingElements.length > 0) {
-            console.error('Missing essential elements:', missingElements);
-            this.showNotification('Application initialization failed - missing UI elements', 'error');
-            return;
-        }
-        
         this.setupEditableTranscription();
     }
     
     setupEditableTranscription() {
-        if (!this.transcription) return;
-        
         this.transcription.addEventListener('input', () => {
             this.transcriptText = this.transcription.textContent || '';
             this.updateStats();
-            this.saveToLocalStorage();
         });
         
         this.transcription.addEventListener('paste', (e) => {
             e.preventDefault();
-            const text = (e.clipboardData || window.clipboardData).getData('text/plain');
+            const text = e.clipboardData.getData('text/plain');
             document.execCommand('insertText', false, text);
         });
         
@@ -107,20 +75,9 @@ class Speaky {
                 this.showPlaceholder();
             }
         });
-
-        // Auto-save functionality
-        let autoSaveTimeout;
-        this.transcription.addEventListener('input', () => {
-            clearTimeout(autoSaveTimeout);
-            autoSaveTimeout = setTimeout(() => {
-                this.autoSave();
-            }, 2000); // Auto-save after 2 seconds of inactivity
-        });
     }
     
     showPlaceholder() {
-        if (!this.transcription) return;
-        
         this.transcription.innerHTML = `
             <div class="placeholder">
                 <i class="fas fa-comment-dots"></i>
@@ -131,768 +88,788 @@ class Speaky {
     }
     
     async initSpeechRecognition() {
-        // Check browser compatibility
-        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-        if (!SpeechRecognition) {
-            const message = this.isMobile ? 
-                'Speech recognition requires Chrome, Safari, or Edge browser' : 
-                'Speech recognition not supported. Please use Chrome, Edge, or Safari';
+        const isChromeMobile = /Chrome\/[0-9]+\./i.test(navigator.userAgent) && 
+                             /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+        
+        const hasWebkitSR = 'webkitSpeechRecognition' in window;
+        const hasSR = 'SpeechRecognition' in window;
+        
+        if (!hasWebkitSR && !hasSR) {
+            const message = isChromeMobile ? 
+                'Please update Chrome to the latest version for best results.' : 
+                'Speech recognition not supported in this browser. Use Chrome, Edge, or Safari.';
             this.showNotification(message, 'error');
-            this.disableMicButton();
-            return false;
+            return;
         }
 
-        // Check for HTTPS on mobile
-        if (this.isMobile && location.protocol !== 'https:' && location.hostname !== 'localhost') {
+        if (this.isMobile && !window.isSecureContext) {
             this.showNotification('Speech recognition requires HTTPS on mobile devices', 'error');
-            this.disableMicButton();
-            return false;
+            return;
         }
         
-        try {
-            // Request microphone permission
-            await this.requestMicrophonePermission();
-            
-            // Initialize recognition
-            this.recognition = new SpeechRecognition();
-            this.configureRecognition();
-            this.setupRecognitionHandlers();
-            
-            this.showNotification('Speech recognition ready!', 'success');
-            return true;
-            
-        } catch (error) {
-            console.error('Speech recognition initialization failed:', error);
-            this.showNotification(this.getMicrophoneErrorMessage(error), 'error');
-            this.disableMicButton();
-            return false;
-        }
-    }
-    
-    async requestMicrophonePermission() {
-        const stream = await navigator.mediaDevices.getUserMedia({
-            audio: {
-                echoCancellation: true,
-                noiseSuppression: true,
-                autoGainControl: true,
-                sampleRate: this.isMobile ? 16000 : 44100
-            }
-        });
-        
-        // Release the stream immediately after permission check
-        stream.getTracks().forEach(track => track.stop());
-    }
-    
-    configureRecognition() {
-        if (!this.recognition) return;
-        
-        this.recognition.continuous = true;
-        this.recognition.interimResults = true;
-        this.recognition.lang = this.language?.value || 'en-US';
-        this.recognition.maxAlternatives = this.isMobile ? 3 : 1;
-        
-        // Mobile-specific optimizations
         if (this.isMobile) {
-            this.recognition.serviceURI = null; // Use default service
+            document.body.addEventListener('touchstart', this.handleTouchStart.bind(this), { once: true });
+            return;
         }
-    }
-    
-    setupRecognitionHandlers() {
-        if (!this.recognition) return;
+
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ 
+                audio: {
+                    echoCancellation: true,
+                    noiseSuppression: true,
+                    autoGainControl: true,
+                    sampleRate: this.isMobile ? 16000 : 44100
+                }
+            });
+            
+            stream.getTracks().forEach(track => track.stop());
+            
+            this.showNotification('Microphone access granted!', 'success');
+        } catch (error) {
+            console.error('Microphone access error:', error);
+            const message = this.isMobile ? 
+                'Please allow microphone access in your browser settings and refresh the page. Make sure you\'re using HTTPS.' : 
+                'Please allow microphone access to use speech recognition';
+            this.showNotification(message, 'error');
+            return;
+        }
+
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        this.recognition = new SpeechRecognition();
         
+        // Mobile-specific settings
+        if (this.isMobile) {
+            this.recognition.continuous = true; // Changed to true for mobile
+            this.recognition.interimResults = false; // Disable interim results on mobile
+            this.recognition.maxAlternatives = 1;
+            this.mobileTimeout = null;
+        } else {
+            this.recognition.continuous = true;
+            this.recognition.interimResults = true;
+            this.recognition.maxAlternatives = 1;
+        }
+        
+        this.recognition.lang = this.language.value;
+            
         this.recognition.onstart = () => {
             console.log('Speech recognition started');
-            this.recognitionState = 'listening';
-            this.updateStatus('Listening...');
+            this.recognitionState = 'running';
             this.startTimer();
-            this.reconnectAttempts = 0;
             
-            // Set mobile timeout
             if (this.isMobile) {
-                this.setMobileTimeout();
+                this.mobileTimeout = setTimeout(() => {
+                    if (this.isRecording) {
+                        console.log('Mobile timeout reached, restarting recognition');
+                        this.recognition.stop();
+                    }
+                }, 30000);
             }
         };
         
         this.recognition.onresult = (event) => {
-            this.handleRecognitionResult(event);
+            // Mobile-specific handling
+            if (this.isMobile) {
+                const now = Date.now();
+                if (now - this.lastUpdateTime < 300) { // 300ms throttle window
+                    return;
+                }
+                this.lastUpdateTime = now;
+
+                let finalTranscript = '';
+                for (let i = event.resultIndex; i < event.results.length; i++) {
+                    if (event.results[i].isFinal) {
+                        finalTranscript += event.results[i][0].transcript + ' ';
+                    }
+                }
+                
+                if (finalTranscript.trim()) {
+                    this.updateTranscript(finalTranscript, '');
+                }
+            } else {
+                // Desktop handling
+                let interimTranscript = '';
+                let finalTranscript = '';
+                
+                for (let i = event.resultIndex; i < event.results.length; i++) {
+                    const transcript = event.results[i][0].transcript;
+                    if (event.results[i].isFinal) {
+                        finalTranscript += transcript + ' ';
+                    } else {
+                        interimTranscript += transcript;
+                    }
+                }
+                
+                this.updateTranscript(finalTranscript, interimTranscript);
+            }
         };
         
         this.recognition.onerror = (event) => {
-            this.handleRecognitionError(event);
+            console.error('Speech recognition error:', event.error);
+            
+            if (this.isMobile && this.mobileTimeout) {
+                clearTimeout(this.mobileTimeout);
+                this.mobileTimeout = null;
+            }
+            
+            let errorMessage = `Error: ${event.error}`;
+            
+            if (this.isMobile) {
+                switch (event.error) {
+                    case 'not-allowed':
+                        errorMessage = 'Microphone access denied. Please enable in browser settings.';
+                        break;
+                    case 'no-speech':
+                        errorMessage = 'No speech detected. Try speaking closer to the microphone.';
+                        setTimeout(() => {
+                            if (this.isRecording && this.recognitionState !== 'running') {
+                                try {
+                                    this.recognition.start();
+                                    this.recognitionState = 'starting';
+                                } catch (e) {
+                                    console.error('Failed to restart after no-speech:', e);
+                                }
+                            }
+                        }, 1000);
+                        return;
+                    case 'network':
+                        errorMessage = 'Network error. Check your internet connection and try again.';
+                        break;
+                    case 'audio-capture':
+                        errorMessage = 'Microphone not available. Check if another app is using it.';
+                        break;
+                    case 'service-not-allowed':
+                        errorMessage = 'Speech service not allowed. Try refreshing the page.';
+                        break;
+                    case 'aborted':
+                        return;
+                }
+            }
+            
+            this.showNotification(errorMessage, 'error');
+            this.stopRecording();
         };
         
         this.recognition.onend = () => {
-            this.handleRecognitionEnd();
-        };
-        
-        this.recognition.onsoundstart = () => {
-            this.updateStatus('Sound detected...');
-            this.lastActivityTime = Date.now();
-        };
-        
-        this.recognition.onsoundend = () => {
-            this.updateStatus('Processing...');
-            this.recognitionState = 'processing';
-        };
-        
-        this.recognition.onspeechstart = () => {
-            this.updateStatus('Speech detected...');
-            this.lastActivityTime = Date.now();
-        };
-    }
-    
-    setMobileTimeout() {
-        if (this.mobileTimeout) {
-            clearTimeout(this.mobileTimeout);
-        }
-        
-        this.mobileTimeout = setTimeout(() => {
-            if (this.isRecording && this.recognition) {
-                console.log('Mobile timeout reached, restarting recognition');
-                this.restartRecognition();
-            }
-        }, 30000); // 30 second timeout
-    }
-    
-    clearMobileTimeout() {
-        if (this.mobileTimeout) {
-            clearTimeout(this.mobileTimeout);
-            this.mobileTimeout = null;
-        }
-    }
-    
-    handleRecognitionResult(event) {
-        let interimTranscript = '';
-        let finalTranscript = '';
-        
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-            const result = event.results[i];
-            const transcript = result[0].transcript;
+            this.recognitionState = 'stopped';
             
-            if (result.isFinal) {
-                finalTranscript += transcript + ' ';
-            } else {
-                interimTranscript += transcript;
+            if (this.isMobile && this.mobileTimeout) {
+                clearTimeout(this.mobileTimeout);
+                this.mobileTimeout = null;
             }
-        }
-        
-        this.updateTranscript(finalTranscript, interimTranscript);
-        this.lastActivityTime = Date.now();
-    }
-    
-   handleRecognitionResult(event) {
-    let interimTranscript = '';
-    let finalTranscript = '';
-
-    for (let i = event.resultIndex; i < event.results.length; i++) {
-        const result = event.results[i];
-        const transcript = result[0].transcript;
-
-        if (result.isFinal) {
-            finalTranscript += transcript + ' ';
-        } else {
-            interimTranscript += transcript;
-        }
-    }
-
-    // Only append new final transcript
-    if (finalTranscript.trim()) {
-        // Avoid adding duplicates by checking last words
-        const lastWords = this.transcriptText.split(' ').slice(-5).join(' ').trim();
-        if (!finalTranscript.startsWith(lastWords)) {
-            let processedText = this.voiceProcessor.processVoiceCommands(finalTranscript);
-            processedText = this.voiceProcessor.applyAutoPunctuation(processedText);
-            this.transcriptText += processedText;
-        }
-    }
-
-    this.updateTranscriptDisplay(interimTranscript);
-    this.updateStats();
-    this.lastActivityTime = Date.now();
-}
-
-    handleRecognitionEnd() {
-        console.log('Speech recognition ended');
-        this.clearMobileTimeout();
-        
-        if (this.isRecording && this.recognitionState !== 'stopping') {
-            this.scheduleRestart();
-        }
-    }
-    
-    scheduleRestart() {
-        if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-            this.showNotification('Max reconnection attempts reached. Please restart manually.', 'error');
-            this.stopRecording();
-            return;
-        }
-        
-        const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 5000); // Exponential backoff
-        this.reconnectAttempts++;
-        
-        setTimeout(() => {
-            if (this.isRecording) {
-                this.restartRecognition();
-            }
-        }, delay);
-    }
-    
-    async restartRecognition() {
-        if (!this.recognition || !this.isRecording) return;
-        
-        try {
-            this.recognitionState = 'starting';
-            this.updateStatus('Reconnecting...');
-            this.recognition.start();
             
-            if (this.isMobile) {
-                this.setMobileTimeout();
+            if (this.isRecording && !this.restarting) {
+                this.restarting = true;
+                const restartDelay = this.isMobile ? 1000 : 100;
+                setTimeout(() => {
+                    this.restarting = false;
+                    if (this.isRecording && this.recognitionState === 'stopped') {
+                        try {
+                            this.recognition.start();
+                            this.recognitionState = 'starting';
+                        } catch (error) {
+                            console.error('Failed to restart recognition:', error);
+                            if (this.isMobile) {
+                                setTimeout(() => {
+                                    if (this.isRecording && this.recognitionState === 'stopped') {
+                                        try {
+                                            this.recognition.start();
+                                            this.recognitionState = 'starting';
+                                        } catch (e) {
+                                            console.error('Final restart attempt failed:', e);
+                                            this.stopRecording();
+                                        }
+                                    }
+                                }, 2000);
+                            } else {
+                                this.stopRecording();
+                            }
+                        }
+                    }
+                }, restartDelay);
             }
-        } catch (error) {
-            console.error('Failed to restart recognition:', error);
-            this.scheduleRestart();
-        }
+        };
     }
     
     initEvents() {
-        // Core functionality
-        this.micButton?.addEventListener('click', () => this.toggleRecording());
-        this.copyBtn?.addEventListener('click', () => this.copyText());
-        this.clearBtn?.addEventListener('click', () => this.clearText());
-        this.saveBtn?.addEventListener('click', () => this.saveText());
+        this.micButton.addEventListener('click', () => this.toggleRecording());
+        this.copyBtn.addEventListener('click', () => this.copyText());
+        this.clearBtn.addEventListener('click', () => this.clearText());
+        this.saveBtn.addEventListener('click', () => this.saveText());
         
-        // Language change
-        this.language?.addEventListener('change', () => {
+        this.language.addEventListener('change', () => {
             if (this.recognition) {
                 this.recognition.lang = this.language.value;
-                this.saveSettings();
+                if (this.isRecording) {
+                    this.recognition.stop();
+                }
             }
         });
         
-        // Feature toggles
-        this.voiceCommandsBtn?.addEventListener('click', () => this.toggleVoiceCommands());
-        this.autoPunctuationBtn?.addEventListener('click', () => this.toggleAutoPunctuation());
-        this.aipowerBtn?.addEventListener('click', () => this.toggleAIPower());
+        this.voiceCommandsBtn.addEventListener('click', () => this.toggleVoiceCommands());
+        this.autoPunctuationBtn.addEventListener('click', () => this.toggleAutoPunctuation());
         
-        // Export and share
-        this.exportDocBtn?.addEventListener('click', () => this.exportAsDoc());
-        this.exportPdfBtn?.addEventListener('click', () => this.exportAsPdf());
-        this.shareWhatsAppBtn?.addEventListener('click', () => this.shareToWhatsApp());
-        this.shareTelegramBtn?.addEventListener('click', () => this.shareToTelegram());
-        this.shareDiscordBtn?.addEventListener('click', () => this.shareToDiscord());
-        this.shareEmailBtn?.addEventListener('click', () => this.shareViaEmail());
+        this.exportDocBtn.addEventListener('click', () => this.exportAsDoc());
+        this.exportPdfBtn.addEventListener('click', () => this.exportAsPdf());
+        this.shareWhatsAppBtn.addEventListener('click', () => this.shareToWhatsApp());
+        this.shareTelegramBtn.addEventListener('click', () => this.shareToTelegram());
+        this.shareDiscordBtn.addEventListener('click', () => this.shareToDiscord());
+        this.shareEmailBtn.addEventListener('click', () => this.shareViaEmail());
         
-        // Keyboard shortcuts
-        document.addEventListener('keydown', (e) => this.handleKeyboardShortcuts(e));
-        
-        // Page visibility handling
-        document.addEventListener('visibilitychange', () => {
-            if (document.hidden && this.isRecording) {
-                // Pause recognition when page is hidden to save resources
-                this.pauseRecording();
-            } else if (!document.hidden && this.isRecording) {
-                // Resume recognition when page becomes visible
-                this.resumeRecording();
+        document.addEventListener('keydown', (e) => {
+            if (e.ctrlKey && e.shiftKey && e.key === 'S') {
+                e.preventDefault();
+                this.toggleRecording();
+            }
+            if (e.ctrlKey && e.key === 's') {
+                e.preventDefault();
+                this.saveText();
+            }
+            if (e.ctrlKey && e.key === 'c' && !window.getSelection().toString()) {
+                e.preventDefault();
+                this.copyText();
             }
         });
-        
-        // Window beforeunload
-        window.addEventListener('beforeunload', () => {
-            this.saveSettings();
-            this.autoSave();
+
+        window.addEventListener('unhandledrejection', (event) => {
+            console.error('Unhandled rejection:', event.reason);
+            this.showNotification('An unexpected error occurred', 'error');
         });
     }
     
-    handleKeyboardShortcuts(e) {
-        // Ctrl+Shift+S: Toggle recording
-        if (e.ctrlKey && e.shiftKey && e.key === 'S') {
-            e.preventDefault();
-            this.toggleRecording();
-        }
-        // Ctrl+S: Save
-        else if (e.ctrlKey && e.key === 's') {
-            e.preventDefault();
-            this.saveText();
-        }
-        // Ctrl+C: Copy (when no text selected)
-        else if (e.ctrlKey && e.key === 'c' && !window.getSelection().toString()) {
-            e.preventDefault();
-            this.copyText();
-        }
-        // Ctrl+D: Clear
-        else if (e.ctrlKey && e.key === 'd') {
-            e.preventDefault();
-            this.clearText();
-        }
-        // Escape: Stop recording
-        else if (e.key === 'Escape' && this.isRecording) {
-            e.preventDefault();
-            this.stopRecording();
-        }
-    }
-    
-    async toggleRecording() {
+    toggleRecording() {
         if (this.isRecording) {
             this.stopRecording();
         } else {
-            await this.startRecording();
+            this.startRecording();
+        }
+    }
+    
+    handleTouchStart() {
+        if (this.isMobile && typeof AudioContext !== 'undefined') {
+            this.audioContext = this.audioContext || new (window.AudioContext || window.webkitAudioContext)();
+            if (this.audioContext.state === 'suspended') {
+                this.audioContext.resume();
+            }
         }
     }
     
     async startRecording() {
-        if (this.isRecording) return;
-        
-        // Initialize recognition if not already done
-        if (!this.recognition) {
-            const initialized = await this.initSpeechRecognition();
-            if (!initialized) return;
-        }
-        
-        this.isRecording = true;
-        this.recognitionState = 'starting';
-        this.updateUIForRecording(true);
-        this.updateStatus('Starting...');
-        
-        try {
-            // Small delay to ensure UI updates
-            await new Promise(resolve => setTimeout(resolve, 50));
-            
-            this.recognition.start();
-            
-            if (this.isMobile) {
-                this.setMobileTimeout();
-            }
-            
-        } catch (error) {
-            console.error('Failed to start recording:', error);
-            this.showNotification('Failed to start recording: ' + error.message, 'error');
-            this.stopRecording();
-        }
-    }
-    
-    stopRecording() {
-        this.isRecording = false;
-        this.recognitionState = 'stopping';
-        this.updateUIForRecording(false);
-        this.updateStatus('Stopped');
-        this.stopTimer();
-        this.clearMobileTimeout();
-        
-        if (this.recognition) {
-            try {
-                this.recognition.stop();
-            } catch (error) {
-                console.error('Error stopping recognition:', error);
-            }
-        }
-        
-        // Auto-save when stopping
-        this.autoSave();
-    }
-    
-    pauseRecording() {
-        if (!this.isRecording) return;
-        
-        this.recognitionState = 'paused';
-        this.updateStatus('Paused');
-        
-        if (this.recognition) {
-            try {
-                this.recognition.stop();
-            } catch (error) {
-                console.error('Error pausing recognition:', error);
-            }
-        }
-    }
-    
-    resumeRecording() {
-        if (!this.isRecording || this.recognitionState !== 'paused') return;
-        
-        this.restartRecognition();
-    }
-    
-    updateUIForRecording(isRecording) {
-        if (!this.micButton || !this.micIcon) return;
-        
-        if (isRecording) {
-            this.micButton.classList.add('recording');
-            this.micIcon.className = 'fas fa-stop';
-        } else {
-            this.micButton.classList.remove('recording');
-            this.micIcon.className = 'fas fa-microphone';
-        }
-    }
-    
-    updateStatus(message) {
-        if (this.status) {
-            this.status.textContent = message;
-            if (message.includes('Listening') || message.includes('detected')) {
-                this.status.classList.add('recording');
-            } else {
-                this.status.classList.remove('recording');
-            }
-        }
-    }
-    
-    updateTranscript(finalText, interimText = '') {
-        if (!this.transcription) return;
-        
-        try {
-            if (finalText.trim()) {
-                // Process text through voice commands and punctuation
-                let processedText = this.voiceProcessor.processVoiceCommands(finalText);
-                processedText = this.voiceProcessor.applyAutoPunctuation(processedText);
-                
-                this.transcriptText += processedText;
-                
-                // Apply AI correction if enabled
-                if (this.aipower) {
-                    this.queueAICorrection();
-                }
-            }
-            
-            // Update display
-            this.updateTranscriptDisplay(interimText);
-            this.updateStats();
-            
-        } catch (error) {
-            console.error('Error updating transcript:', error);
-        }
-    }
-    
-    updateTranscriptDisplay(interimText = '') {
-        if (!this.transcription) return;
-        
-        let displayText = this.transcriptText;
-        if (interimText.trim()) {
-            displayText += `<span class="interim">${interimText}</span>`;
-        }
-        
-        if (displayText.trim()) {
-            // Remove placeholder if present
-            const placeholder = this.transcription.querySelector('.placeholder');
-            if (placeholder) {
-                placeholder.remove();
-            }
-            
-            // Convert newlines to br tags for display
-            displayText = displayText.replace(/\n/g, '<br>');
-            this.transcription.innerHTML = displayText;
-            
-            // Auto-scroll to bottom
-            this.transcription.scrollTop = this.transcription.scrollHeight;
-        } else if (document.activeElement !== this.transcription) {
-            this.showPlaceholder();
-        }
-    }
-    
-    // AI correction with debouncing
-    queueAICorrection() {
-        if (this.aiCorrectionTimeout) {
-            clearTimeout(this.aiCorrectionTimeout);
-        }
-        
-        this.aiCorrectionTimeout = setTimeout(() => {
-            this.correctWithAI();
-        }, 2000); // Wait 2 seconds after last input
-    }
-    
-    async correctWithAI() {
-    if (!this.transcriptText.trim()) return;
-
-    try {
-        this.updateStatus('AI correcting...');
-
-        const response = await fetch('/.netlify/functions/ai-correct', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                text: this.transcriptText,
-                preset: 'speaky',
-                options: {
-                    preserveFormatting: true,
-                    handleRepetitions: true,
-                    improveReadability: true
-                }
-            })
-        });
-
-        if (!response.ok) {
-            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-        }
-
-        const data = await response.json();
-
-        if (data.corrected_text && data.corrected_text !== this.transcriptText) {
-            this.transcriptText = data.corrected_text;
-            this.updateTranscriptDisplay();
-            this.showNotification('Transcript corrected by AI', 'success');
-        }
-
-    } catch (error) {
-        console.error('AI correction failed:', error);
-        this.showNotification('AI correction unavailable', 'warning');
-    } finally {
-        if (!this.isRecording) {
-            this.updateStatus('Ready');
-        }
-    }
-}
-
-    // Utility methods
-    async copyText() {
-        const text = this.getTranscriptText();
-        if (!text.trim()) {
-            this.showNotification('No text to copy', 'warning');
+        if (this.isRecording) {
+            console.log('Recording already in progress');
             return;
         }
         
+        this.isRecording = true;
+        this.micButton.classList.add('recording');
+        this.micIcon.className = 'fas fa-stop';
+        this.status.textContent = 'Initializing...';
+        this.status.classList.add('recording');
+        
+        await new Promise(resolve => setTimeout(resolve, 50));
+        
+        if (this.isMobile) {
+            try {
+                this.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                this.mediaStream.getTracks().forEach(track => track.stop());
+                
+                if (!this.recognition) {
+                    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+                    if (!SpeechRecognition) {
+                        throw new Error('Speech recognition not supported');
+                    }
+                    
+                    this.recognition = new SpeechRecognition();
+                    this.recognition.continuous = true; // Changed to true for mobile
+                    this.recognition.interimResults = false; // Disabled for mobile
+                    this.recognition.lang = this.language.value;
+                    this.recognitionState = 'stopped';
+                    
+                    this.recognition.onresult = (event) => {
+                        const now = Date.now();
+                        if (now - this.lastUpdateTime < 300) return;
+                        this.lastUpdateTime = now;
+
+                        let finalTranscript = '';
+                        for (let i = event.resultIndex; i < event.results.length; i++) {
+                            if (event.results[i].isFinal) {
+                                finalTranscript += event.results[i][0].transcript + ' ';
+                            }
+                        }
+                        
+                        if (finalTranscript.trim()) {
+                            this.updateTranscript(finalTranscript, '');
+                            this.status.textContent = 'Listening...';
+                        }
+                    };
+                    
+                    this.recognition.onerror = (event) => {
+                        console.error('Speech recognition error:', event.error);
+                        let errorMessage = `Error: ${event.error}`;
+                        
+                        switch (event.error) {
+                            case 'not-allowed':
+                                errorMessage = 'Microphone access denied. Please enable in browser settings.';
+                                break;
+                            case 'no-speech':
+                                errorMessage = 'No speech detected. Try speaking closer to the microphone.';
+                                return;
+                            case 'audio-capture':
+                                errorMessage = 'No microphone found. Please check your device settings.';
+                                break;
+                        }
+                        
+                        this.showNotification(errorMessage, 'error');
+                        this.stopRecording();
+                    };
+                    
+                    this.recognition.onstart = () => {
+                        this.recognitionState = 'running';
+                        console.log('Speech recognition started');
+                    };
+                    
+                    this.recognition.onend = () => {
+                        this.recognitionState = 'stopped';
+                        if (this.isRecording && !this.restarting) {
+                            this.restarting = true;
+                            setTimeout(() => {
+                                this.restarting = false;
+                                if (this.isRecording && this.recognitionState === 'stopped') {
+                                    try {
+                                        this.recognition.start();
+                                        this.recognitionState = 'starting';
+                                    } catch (e) {
+                                        console.error('Failed to restart recognition:', e);
+                                        this.stopRecording();
+                                    }
+                                }
+                            }, 100);
+                        }
+                    };
+                }
+                
+                await new Promise(resolve => setTimeout(resolve, 100));
+                this.status.textContent = 'Listening...';
+                
+                if (this.recognition && this.recognitionState === 'stopped') {
+                    this.recognition.start();
+                    this.recognitionState = 'starting';
+                }
+                return;
+                
+            } catch (error) {
+                console.error('Mobile recording error:', error);
+                this.showNotification('Failed to access microphone. ' + (error.message || ''), 'error');
+                this.stopRecording();
+                return;
+            }
+        }
+        
         try {
-            await navigator.clipboard.writeText(text.trim());
-            this.showNotification('Text copied to clipboard!', 'success');
+            this.mediaStream = await navigator.mediaDevices.getUserMedia({ 
+                audio: {
+                    echoCancellation: true,
+                    noiseSuppression: true,
+                    autoGainControl: true
+                }
+            });
+            this.mediaStream.getTracks().forEach(track => track.stop());
+            
+            await new Promise(resolve => setTimeout(resolve, 100));
+            
+            this.status.textContent = 'Listening...';
+            
+            if (this.recognition && this.recognitionState === 'stopped') {
+                this.recognition.start();
+                this.recognitionState = 'starting';
+            }
         } catch (error) {
-            this.fallbackCopyText(text.trim());
+            console.error('Microphone access error:', error);
+            this.showNotification('Microphone access denied. Please allow access to use speech recognition.', 'error');
+            this.stopRecording();
+        }
+    }
+
+    stopRecording() {
+        this.isRecording = false;
+        this.micButton.classList.remove('recording');
+        this.micIcon.className = 'fas fa-microphone';
+        this.status.textContent = 'Click to start recording';
+        this.status.classList.remove('recording');
+        this.stopTimer();
+        
+        if (this.mobileTimeout) {
+            clearTimeout(this.mobileTimeout);
+            this.mobileTimeout = null;
+        }
+        
+        if (this.recognition) {
+            try {
+                this.recognition.stop();
+                this.recognitionState = 'stopping';
+            } catch (e) {
+                console.log('Error stopping recognition:', e);
+            }
+        }
+        
+        if (this.audioContext) {
+            this.audioContext.close();
+            this.audioContext = null;
+        }
+        
+        if (this.mediaStream) {
+            this.mediaStream.getTracks().forEach(track => track.stop());
+            this.mediaStream = null;
+        }
+    }
+
+    updateTranscript(finalText, interimText) {
+        // Skip empty results
+        if ((!finalText || finalText.trim() === '') && (!interimText || interimText.trim() === '')) {
+            return;
+        }
+
+        try {
+            if (finalText) {
+                let processedText = this.processVoiceCommands(finalText);
+                processedText = this.applyAutoPunctuation(processedText);
+                
+                // Skip empty processed text
+                if (processedText.trim() === '') {
+                    return;
+                }
+                
+                // Only append if it's not already at the end of our transcript
+                if (!this.transcriptText.endsWith(processedText)) {
+                    this.transcriptText += processedText;
+                }
+            }
+            
+            let displayText = this.transcriptText;
+            if (interimText && !this.isMobile) {  // Only show interim on desktop
+                displayText += `<span class="interim">${interimText}</span>`;
+            }
+            
+            if (displayText.trim()) {
+                const placeholder = this.transcription.querySelector('.placeholder');
+                if (placeholder) {
+                    placeholder.remove();
+                }
+                
+                displayText = displayText.replace(/\n/g, '<br>');
+                
+                // Mobile-specific handling to ensure text appears
+                if (this.isMobile) {
+                    // First clear the content
+                    this.transcription.textContent = '';
+                    // Then add new content
+                    this.transcription.innerHTML = displayText;
+                    // Ensure it's editable
+                    this.transcription.setAttribute('contenteditable', 'true');
+                } else {
+                    this.transcription.innerHTML = displayText;
+                }
+            } else if (document.activeElement !== this.transcription) {
+                this.showPlaceholder();
+            }
+            
+            this.updateStats();
+            
+            // Auto-scroll to bottom
+            requestAnimationFrame(() => {
+                this.transcription.scrollTop = this.transcription.scrollHeight;
+            });
+        } catch (error) {
+            console.error('Error in updateTranscript:', error);
+        }
+    }
+    
+    processVoiceCommands(text) {
+        if (!this.voiceCommands) return text;
+        
+        const commands = {
+            'new line': '\n',
+            'new paragraph': '\n\n',
+            'period': '.',
+            'full stop': '.',
+            'comma': ',',
+            'question mark': '?',
+            'exclamation mark': '!',
+            'colon': ':',
+            'semicolon': ';',
+            'dash': '-',
+            'quote': '"',
+            'open parenthesis': '(',
+            'close parenthesis': ')',
+            'delete that': () => {
+                const words = this.transcriptText.trim().split(' ');
+                words.pop();
+                this.transcriptText = words.join(' ') + ' ';
+                return '';
+            }
+        };
+        
+        let processedText = text;
+        for (const [command, replacement] of Object.entries(commands)) {
+            const regex = new RegExp(`\\b${command}\\b`, 'gi');
+            if (typeof replacement === 'function') {
+                if (regex.test(processedText)) {
+                    replacement();
+                    processedText = processedText.replace(regex, '');
+                }
+            } else {
+                processedText = processedText.replace(regex, replacement);
+            }
+        }
+        
+        return processedText;
+    }
+    
+    applyAutoPunctuation(text) {
+        if (!this.autoPunctuation) return text;
+        
+        text = text.replace(/\bi\b/g, 'I');
+        text = text.replace(/^(\w)/, (match) => match.toUpperCase());
+        text = text.replace(/(\. )(\w)/g, (match, p1, p2) => p1 + p2.toUpperCase());
+        
+        if (!text.match(/[.!?]$/)) {
+            text += '.';
+        }
+        
+        return text;
+    }
+    
+    async copyText() {
+        const text = this.getTranscriptText();
+        if (text.trim()) {
+            try {
+                const permission = await navigator.permissions.query({ name: 'clipboard-write' });
+                if (permission.state === 'granted' || permission.state === 'prompt') {
+                    await navigator.clipboard.writeText(text.trim());
+                    this.showNotification('Text copied to clipboard!', 'success');
+                } else {
+                    this.fallbackCopyText(text.trim());
+                }
+            } catch (err) {
+                this.fallbackCopyText(text.trim());
+            }
+        } else {
+            this.showNotification('No text to copy', 'error');
         }
     }
     
     fallbackCopyText(text) {
         const textArea = document.createElement('textarea');
         textArea.value = text;
-        textArea.style.position = 'fixed';
-        textArea.style.left = '-999999px';
-        textArea.style.top = '-999999px';
         document.body.appendChild(textArea);
-        textArea.focus();
         textArea.select();
-        
         try {
             document.execCommand('copy');
             this.showNotification('Text copied to clipboard!', 'success');
-        } catch (error) {
+        } catch (err) {
             this.showNotification('Failed to copy text', 'error');
         }
-        
         document.body.removeChild(textArea);
+    }
+    
+    getTranscriptText() {
+        return this.transcription.textContent || this.transcriptText || '';
     }
     
     clearText() {
         this.transcriptText = '';
+        this.lastFinalTranscript = '';
         this.showPlaceholder();
-        this.timeCount && (this.timeCount.textContent = '00:00');
-        this.updateStats();
+        this.timeCount.textContent = '00:00';
         this.showNotification('Text cleared', 'success');
-        this.saveToLocalStorage();
+        this.updateStats();
     }
     
-    getTranscriptText() {
-        return this.transcription?.textContent || this.transcriptText || '';
-    }
-    
-    // Feature toggles
-    toggleVoiceCommands() {
-        this.voiceCommands = !this.voiceCommands;
-        this.voiceProcessor.voiceCommands = this.voiceCommands;
-        this.updateButtonState(this.voiceCommandsBtn, this.voiceCommands);
-        this.showNotification(
-            `Voice commands ${this.voiceCommands ? 'enabled' : 'disabled'}`,
-            this.voiceCommands ? 'success' : 'warning'
-        );
-        this.saveSettings();
-    }
-    
-    toggleAutoPunctuation() {
-        this.autoPunctuation = !this.autoPunctuation;
-        this.voiceProcessor.autoPunctuation = this.autoPunctuation;
-        this.updateButtonState(this.autoPunctuationBtn, this.autoPunctuation);
-        this.showNotification(
-            `Auto-punctuation ${this.autoPunctuation ? 'enabled' : 'disabled'}`,
-            this.autoPunctuation ? 'success' : 'warning'
-        );
-        this.saveSettings();
-    }
-    
-    toggleAIPower() {
-        this.aipower = !this.aipower;
-        this.updateButtonState(this.aipowerBtn, this.aipower);
-        this.showNotification(
-            `AI correction ${this.aipower ? 'enabled' : 'disabled'}`,
-            this.aipower ? 'success' : 'warning'
-        );
-        this.saveSettings();
-        
-        if (this.aipower && this.transcriptText.trim()) {
-            this.correctWithAI();
-        }
-    }
-    
-    updateButtonState(button, isActive) {
-        if (!button) return;
-        
-        button.style.background = isActive ? '#10a37f' : '#2f2f2f';
-        button.style.color = isActive ? 'white' : '#ececf1';
-    }
-    
-    // Export and sharing methods
     saveText() {
         const text = this.getTranscriptText();
-        if (!text.trim()) {
-            this.showNotification('No text to save', 'warning');
-            return;
+        if (text.trim()) {
+            this.downloadFile(text.trim(), 'text/plain', 'txt');
+            this.showNotification('Text saved as TXT file!', 'success');
+        } else {
+            this.showNotification('No text to save', 'error');
         }
-        
-        this.downloadFile(text.trim(), 'text/plain', 'txt');
-        this.showNotification('Text saved as TXT file!', 'success');
     }
     
     exportAsDoc() {
         const text = this.getTranscriptText();
-        if (!text.trim()) {
-            this.showNotification('No text to export', 'warning');
-            return;
+        if (text.trim()) {
+            const htmlContent = `
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <meta charset="UTF-8">
+                    <title>Speaky Transcript</title>
+                    <style>
+                        body { font-family: Arial, sans-serif; line-height: 1.6; margin: 40px; }
+                        h1 { color: #10a37f; margin-bottom: 20px; }
+                        .meta { color: #666; font-size: 12px; margin-bottom: 30px; }
+                        .content { white-space: pre-wrap; }
+                    </style>
+                </head>
+                <body>
+                    <h1>Speaky Transcript</h1>
+                    <div class="meta">Generated on ${new Date().toLocaleString()}</div>
+                    <div class="content">${text.replace(/\n/g, '<br>')}</div>
+                </body>
+                </html>
+            `;
+            this.downloadFile(htmlContent, 'application/msword', 'doc');
+            this.showNotification('Exported as DOC file!', 'success');
+        } else {
+            this.showNotification('No text to export', 'error');
         }
-        
-        const htmlContent = this.generateDocumentHTML(text);
-        this.downloadFile(htmlContent, 'application/msword', 'doc');
-        this.showNotification('Exported as DOC file!', 'success');
     }
     
     exportAsPdf() {
         const text = this.getTranscriptText();
-        if (!text.trim()) {
-            this.showNotification('No text to export', 'warning');
-            return;
-        }
-        
-        const printWindow = window.open('', '_blank');
-        if (printWindow) {
-            printWindow.document.write(this.generatePrintHTML(text));
+        if (text.trim()) {
+            const printWindow = window.open('', '_blank');
+            printWindow.document.write(`
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <title>Speaky Transcript</title>
+                    <style>
+                        body { font-family: Arial, sans-serif; padding: 20px; line-height: 1.6; }
+                        h1 { color: #333; margin-bottom: 20px; }
+                        .meta { color: #666; font-size: 12px; margin-bottom: 30px; }
+                        .content { white-space: pre-wrap; margin-top: 20px; }
+                        @media print { 
+                            body { margin: 0; }
+                            @page { margin: 1in; }
+                        }
+                    </style>
+                </head>
+                <body>
+                    <h1>Speaky Transcript</h1>
+                    <div class="meta">Generated on ${new Date().toLocaleString()}</div>
+                    <div class="content">${text.replace(/\n/g, '<br>')}</div>
+                    <script>
+                        window.onload = function() {
+                            window.print();
+                            setTimeout(() => {
+                                if (!document.hasFocus()) {
+                                    window.close();
+                                }
+                            }, 1000);
+                        }
+                        window.onbeforeunload = () => {
+                            if (!document.hasFocus()) {
+                                window.close();
+                            }
+                        };
+                    </script>
+                </body>
+                </html>
+            `);
             printWindow.document.close();
             this.showNotification('Opening PDF print dialog...', 'success');
         } else {
-            this.showNotification('Please allow popups for PDF export', 'error');
+            this.showNotification('No text to export', 'error');
         }
     }
     
-    // Sharing methods
     shareToWhatsApp() {
         const text = this.getTranscriptText();
-        if (!text.trim()) {
-            this.showNotification('No text to share', 'warning');
-            return;
+        if (text.trim()) {
+            const encodedText = encodeURIComponent(`Speaky Transcript:\n\n${text.trim()}`);
+            window.open(`https://wa.me/?text=${encodedText}`, '_blank');
+            this.showNotification('Opening WhatsApp...', 'success');
+        } else {
+            this.showNotification('No text to share', 'error');
         }
-        
-        const encodedText = encodeURIComponent(`Speaky Transcript:\n\n${text.trim()}`);
-        window.open(`https://wa.me/?text=${encodedText}`, '_blank');
-        this.showNotification('Opening WhatsApp...', 'success');
     }
     
     shareToTelegram() {
         const text = this.getTranscriptText();
-        if (!text.trim()) {
-            this.showNotification('No text to share', 'warning');
-            return;
+        if (text.trim()) {
+            const encodedText = encodeURIComponent(`Speaky Transcript:\n\n${text.trim()}`);
+            window.open(`https://t.me/share/url?text=${encodedText}`, '_blank');
+            this.showNotification('Opening Telegram...', 'success');
+        } else {
+            this.showNotification('No text to share', 'error');
         }
-        
-        const encodedText = encodeURIComponent(`Speaky Transcript:\n\n${text.trim()}`);
-        window.open(`https://t.me/share/url?text=${encodedText}`, '_blank');
-        this.showNotification('Opening Telegram...', 'success');
     }
     
     shareToDiscord() {
         const text = this.getTranscriptText();
-        if (!text.trim()) {
-            this.showNotification('No text to share', 'warning');
-            return;
+        if (text.trim()) {
+            this.copyText();
+            this.showNotification('Text copied! Paste it in Discord.', 'success');
+        } else {
+            this.showNotification('No text to share', 'error');
         }
-        
-        this.copyText();
-        this.showNotification('Text copied! Paste it in Discord.', 'success');
     }
     
     shareViaEmail() {
         const text = this.getTranscriptText();
-        if (!text.trim()) {
-            this.showNotification('No text to share', 'warning');
-            return;
+        if (text.trim()) {
+            const subject = encodeURIComponent('Speaky Transcript');
+            const body = encodeURIComponent(`Here's my speech-to-text transcript from Speaky:\n\n${text.trim()}`);
+            window.open(`mailto:?subject=${subject}&body=${body}`, '_blank');
+            this.showNotification('Opening email client...', 'success');
+        } else {
+            this.showNotification('No text to share', 'error');
         }
-        
-        const subject = encodeURIComponent('Speaky Transcript');
-        const body = encodeURIComponent(`Here's my speech-to-text transcript from Speaky:\n\n${text.trim()}`);
-        window.open(`mailto:?subject=${subject}&body=${body}`, '_blank');
-        this.showNotification('Opening email client...', 'success');
     }
     
-    // Helper methods
-    generateDocumentHTML(text) {
-        return `
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <meta charset="UTF-8">
-                <title>Speaky Transcript</title>
-                <style>
-                    body { font-family: Arial, sans-serif; line-height: 1.6; margin: 40px; }
-                    h1 { color: #10a37f; margin-bottom: 20px; }
-                    .meta { color: #666; font-size: 12px; margin-bottom: 30px; }
-                    .content { white-space: pre-wrap; }
-                </style>
-            </head>
-            <body>
-                <h1>Speaky Transcript</h1>
-                <div class="content">${text.replace(/\n/g, '<br>')}</div>
-                <script>
-                    window.onload = function() {
-                        window.print();
-                        setTimeout(() => window.close(), 1000);
-                    }
-                </script>
-            </body>
-            </html>
-        `;
+    toggleVoiceCommands() {
+        this.voiceCommands = !this.voiceCommands;
+        this.voiceCommandsBtn.style.background = this.voiceCommands ? '#10a37f' : '#2f2f2f';
+        this.voiceCommandsBtn.style.color = this.voiceCommands ? 'white' : '#ececf1';
+        this.showNotification(
+            `Voice commands ${this.voiceCommands ? 'enabled' : 'disabled'}`, 
+            this.voiceCommands ? 'success' : 'warning'
+        );
+    }
+    
+    toggleAutoPunctuation() {
+        this.autoPunctuation = !this.autoPunctuation;
+        this.autoPunctuationBtn.style.background = this.autoPunctuation ? '#10a37f' : '#2f2f2f';
+        this.autoPunctuationBtn.style.color = this.autoPunctuation ? 'white' : '#ececf1';
+        this.showNotification(
+            `Auto-punctuation ${this.autoPunctuation ? 'enabled' : 'disabled'}`, 
+            this.autoPunctuation ? 'success' : 'warning'
+        );
     }
     
     downloadFile(content, mimeType, extension) {
-        try {
-            const blob = new Blob([content], { type: mimeType });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `speaky-transcript-${new Date().toISOString().split('T')[0]}.${extension}`;
-            a.style.display = 'none';
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
-        } catch (error) {
-            console.error('Download failed:', error);
-            this.showNotification('Download failed', 'error');
-        }
+        const blob = new Blob([content], { type: mimeType });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `speaky-transcript-${new Date().toISOString().split('T')[0]}.${extension}`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
     }
     
-    // Statistics and timer
     updateStats() {
         const text = this.getTranscriptText();
-        const words = text.trim() ? text.trim().split(/\s+/).filter(word => word.length > 0).length : 0;
+        const words = text.trim() ? text.trim().split(/\s+/).length : 0;
         const chars = text.length;
         
-        if (this.wordCount) this.wordCount.textContent = words;
-        if (this.charCount) this.charCount.textContent = chars;
+        this.wordCount.textContent = words;
+        this.charCount.textContent = chars;
     }
     
     startTimer() {
-        if (this.timer) return; // Prevent multiple timers
-        
         this.startTime = Date.now();
-        this.timer = setInterval(() => {
-            const elapsed = Math.floor((Date.now() - this.startTime) / 1000);
-            const minutes = Math.floor(elapsed / 60);
-            const seconds = elapsed % 60;
-            if (this.timeCount) {
+        const updateTimer = () => {
+            if (this.isRecording) {
+                const elapsed = Math.floor((Date.now() - this.startTime) / 1000);
+                const minutes = Math.floor(elapsed / 60);
+                const seconds = elapsed % 60;
                 this.timeCount.textContent = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+                requestAnimationFrame(updateTimer);
             }
-        }, 1000);
+        };
+        updateTimer();
     }
     
     stopTimer() {
@@ -902,322 +879,25 @@ class Speaky {
         }
     }
     
-    // Settings persistence
-    saveSettings() {
-        const settings = {
-            language: this.language?.value || 'en-US',
-            voiceCommands: this.voiceCommands,
-            autoPunctuation: this.autoPunctuation,
-            aipower: this.aipower,
-            lastSaved: Date.now()
-        };
-        
-        try {
-            localStorage.setItem('speaky-settings', JSON.stringify(settings));
-        } catch (error) {
-            console.warn('Failed to save settings:', error);
-        }
-    }
-    
-    loadSettings() {
-        try {
-            const saved = localStorage.getItem('speaky-settings');
-            if (saved) {
-                const settings = JSON.parse(saved);
-                
-                // Apply language setting
-                if (this.language && settings.language) {
-                    this.language.value = settings.language;
-                }
-                
-                // Apply feature settings
-                if (settings.voiceCommands !== undefined) {
-                    this.voiceCommands = settings.voiceCommands;
-                    this.updateButtonState(this.voiceCommandsBtn, this.voiceCommands);
-                }
-                
-                if (settings.autoPunctuation !== undefined) {
-                    this.autoPunctuation = settings.autoPunctuation;
-                    this.updateButtonState(this.autoPunctuationBtn, this.autoPunctuation);
-                }
-                
-                if (settings.aipower !== undefined) {
-                    this.aipower = settings.aipower;
-                    this.updateButtonState(this.aipowerBtn, this.aipower);
-                }
-                
-                // Update voice processor settings
-                if (this.voiceProcessor) {
-                    this.voiceProcessor.voiceCommands = this.voiceCommands;
-                    this.voiceProcessor.autoPunctuation = this.autoPunctuation;
-                }
-            }
-        } catch (error) {
-            console.warn('Failed to load settings:', error);
-        }
-        
-        // Load auto-saved transcript
-        this.loadFromLocalStorage();
-    }
-    
-    // Auto-save functionality
-    autoSave() {
-        const text = this.getTranscriptText();
-        if (text.trim()) {
-            try {
-                const autoSave = {
-                    text: text,
-                    timestamp: Date.now(),
-                    wordCount: text.trim().split(/\s+/).length,
-                    charCount: text.length
-                };
-                localStorage.setItem('speaky-autosave', JSON.stringify(autoSave));
-            } catch (error) {
-                console.warn('Auto-save failed:', error);
-            }
-        }
-    }
-    
-    saveToLocalStorage() {
-        this.autoSave();
-    }
-    
-    loadFromLocalStorage() {
-        try {
-            const autoSave = localStorage.getItem('speaky-autosave');
-            if (autoSave) {
-                const data = JSON.parse(autoSave);
-                // Only restore if it's recent (within 24 hours)
-                if (Date.now() - data.timestamp < 24 * 60 * 60 * 1000) {
-                    this.transcriptText = data.text || '';
-                    if (this.transcriptText.trim()) {
-                        this.updateTranscriptDisplay();
-                        this.updateStats();
-                        this.showNotification('Previous session restored', 'success');
-                    }
-                }
-            }
-        } catch (error) {
-            console.warn('Failed to restore previous session:', error);
-        }
-    }
-    
-    // Error handling utilities
-    isRecoverableError(errorType) {
-        const recoverableErrors = ['network', 'service-not-allowed', 'no-speech'];
-        return recoverableErrors.includes(errorType);
-    }
-    
-    getRecognitionErrorMessage(errorType) {
-        const errorMessages = {
-            'not-allowed': 'Microphone access denied. Please enable microphone permissions.',
-            'no-speech': 'No speech detected. Try speaking closer to the microphone.',
-            'aborted': 'Speech recognition was stopped.',
-            'audio-capture': 'No microphone found. Please check your device settings.',
-            'network': 'Network error. Please check your internet connection.',
-            'service-not-allowed': 'Speech service not allowed. Please refresh the page.',
-            'bad-grammar': 'Grammar error in speech recognition.',
-            'language-not-supported': 'Selected language is not supported.'
-        };
-        
-        return errorMessages[errorType] || `Speech recognition error: ${errorType}`;
-    }
-    
-    getMicrophoneErrorMessage(error) {
-        if (error.name === 'NotAllowedError') {
-            return 'Microphone access denied. Please allow access and refresh the page.';
-        } else if (error.name === 'NotFoundError') {
-            return 'No microphone found. Please check your device settings.';
-        } else if (error.name === 'NotSupportedError') {
-            return 'Your browser doesn\'t support speech recognition.';
-        } else if (error.name === 'NotReadableError') {
-            return 'Microphone is being used by another application.';
-        }
-        return `Microphone error: ${error.message}`;
-    }
-    
-    disableMicButton() {
-        if (this.micButton) {
-            this.micButton.disabled = true;
-            this.micButton.style.opacity = '0.5';
-            this.micButton.title = 'Speech recognition not available';
-        }
-        this.updateStatus('Speech recognition unavailable');
-    }
-    
-    // Notification system
     showNotification(message, type = 'success') {
-        // Remove existing notifications
-        const existing = document.querySelectorAll('.speaky-notification');
-        existing.forEach(notification => notification.remove());
+        clearTimeout(this.notificationTimeout);
         
         const notification = document.createElement('div');
-        notification.className = `speaky-notification notification-${type}`;
+        notification.className = `notification ${type}`;
         notification.textContent = message;
-        
-        // Add styles
-        Object.assign(notification.style, {
-            position: 'fixed',
-            top: '20px',
-            right: '20px',
-            padding: '12px 20px',
-            borderRadius: '8px',
-            color: 'white',
-            fontWeight: '500',
-            fontSize: '14px',
-            zIndex: '10000',
-            maxWidth: '300px',
-            boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
-            transform: 'translateX(100%)',
-            transition: 'all 0.3s ease',
-            cursor: 'pointer'
-        });
-        
-        // Set background color based on type
-        const colors = {
-            success: '#10a37f',
-            error: '#ef4444',
-            warning: '#f59e0b',
-            info: '#3b82f6'
-        };
-        notification.style.backgroundColor = colors[type] || colors.info;
-        
         document.body.appendChild(notification);
         
-        // Animate in
-        requestAnimationFrame(() => {
-            notification.style.transform = 'translateX(0)';
-        });
-        
-        // Click to dismiss
-        notification.addEventListener('click', () => {
-            notification.style.transform = 'translateX(100%)';
-            setTimeout(() => notification.remove(), 300);
-        });
-        
-        // Auto dismiss
-        setTimeout(() => {
-            if (notification.parentNode) {
-                notification.style.transform = 'translateX(100%)';
-                setTimeout(() => {
-                    if (notification.parentNode) {
-                        notification.remove();
-                    }
-                }, 300);
-            }
-        }, type === 'error' ? 5000 : 3000);
-    }
-    
-    // Cleanup method
-    destroy() {
-        // Stop recording
-        this.stopRecording();
-        
-        // Clear timers
-        this.stopTimer();
-        this.clearMobileTimeout();
-        if (this.aiCorrectionTimeout) {
-            clearTimeout(this.aiCorrectionTimeout);
-        }
-        
-        // Save settings
-        this.saveSettings();
-        this.autoSave();
-        
-        // Clean up recognition
-        if (this.recognition) {
-            this.recognition.onstart = null;
-            this.recognition.onend = null;
-            this.recognition.onerror = null;
-            this.recognition.onresult = null;
-            this.recognition = null;
-        }
-        
-        console.log('Speaky instance destroyed');
+        this.notificationTimeout = setTimeout(() => {
+            notification.style.opacity = '0';
+            setTimeout(() => {
+                if (notification.parentNode) {
+                    notification.parentNode.removeChild(notification);
+                }
+            }, 300);
+        }, 3000);
     }
 }
 
-// Voice Command Processor (from your enhanced version)
-class VoiceCommandProcessor {
-    constructor(options = {}) {
-        this.voiceCommands = options.voiceCommands !== false;
-        this.autoPunctuation = options.autoPunctuation !== false;
-        this.smartFormatting = options.smartFormatting !== false;
-        this.customCommands = options.customCommands || {};
-        this.transcriptText = '';
-        this.commandHistory = [];
-        this.undoStack = [];
-        this.maxUndoSteps = 20;
-
-        this.abbreviations = [
-            'e.g.', 'i.e.', 'Mr.', 'Mrs.', 'Dr.', 'Ms.', 'Prof.', 'Jr.', 'Sr.',
-            'vs.', 'etc.', 'Inc.', 'Corp.', 'Ltd.', 'Co.', 'Ave.', 'St.', 'Rd.',
-            'Ph.D.', 'M.D.', 'B.A.', 'M.A.', 'U.S.', 'U.K.', 'a.m.', 'p.m.',
-            'Jan.', 'Feb.', 'Mar.', 'Apr.', 'Aug.', 'Sept.', 'Oct.', 'Nov.', 'Dec.'
-        ];
-
-        this.numberWords = {
-            'zero': '0', 'one': '1', 'two': '2', 'three': '3', 'four': '4',
-            'five': '5', 'six': '6', 'seven': '7', 'eight': '8', 'nine': '9',
-            'ten': '10', 'eleven': '11', 'twelve': '12', 'thirteen': '13',
-            'fourteen': '14', 'fifteen': '15', 'sixteen': '16', 'seventeen': '17',
-            'eighteen': '18', 'nineteen': '19', 'twenty': '20', 'thirty': '30',
-            'forty': '40', 'fifty': '50', 'sixty': '60', 'seventy': '70',
-            'eighty': '80', 'ninety': '90', 'hundred': '100', 'thousand': '1000'
-        };
-    }
-
-    processVoiceCommands(text) {
-        if (!this.voiceCommands) return text;
-
-        const commands = {
-            'period': '.', 'full stop': '.', 'comma': ',', 'question mark': '?',
-            'exclamation mark': '!', 'colon': ':', 'semicolon': ';', 'dash': '-',
-            'new line': '\n', 'new paragraph': '\n\n', 'quote': '"'
-        };
-
-        let processedText = text;
-
-        for (const [command, replacement] of Object.entries(commands)) {
-            const regex = new RegExp(`\\b${this.escapeRegex(command)}\\b`, 'gi');
-            processedText = processedText.replace(regex, replacement);
-        }
-
-        // Replace number words with digits
-        processedText = processedText.replace(/\b(zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand)\b/gi, (match) => {
-            return this.numberWords[match.toLowerCase()] || match;
-        });
-
-        return processedText;
-    }
-
-    applyAutoPunctuation(text) {
-        if (!this.autoPunctuation) return text;
-
-        // Capitalize 'I' and first letter of text
-        text = text.replace(/\bi\b/g, 'I');
-        text = text.replace(/\s+/g, ' ').trim();
-        text = text.replace(/^(\s*["'(\[]*\s*)(\w)/, (match, p1, p2) => p1 + p2.toUpperCase());
-
-        // Add ending punctuation if missing
-        if (!text.match(/[.!?]$/)) {
-            if (text.match(/\b(what|how|when|where|who|why|which|whose)\b/i)) {
-                text += '?';
-            } else {
-                text += '.';
-            }
-        }
-
-        return text;
-    }
-
-    escapeRegex(string) {
-        return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    }
-}
-
-// Initialize when DOM is ready
 document.addEventListener('DOMContentLoaded', () => {
-    window.speaky = new Speaky();
+    new Speaky();
 });
-    
